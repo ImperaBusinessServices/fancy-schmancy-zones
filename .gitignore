@@ -1,0 +1,16 @@
+# Build output
+**/bin/
+**/obj/
+dist/
+
+# Private project memory & local instructions (not for the public repo)
+brain/
+CLAUDE.md
+.claude/
+.playwright-mcp/
+
+# Misc
+*.user
+*.suo
+.vs/
+Thumbs.db

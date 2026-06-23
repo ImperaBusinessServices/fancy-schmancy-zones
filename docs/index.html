@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fancy Schmancy Zones — lockable window layouts for Windows</title>
+<meta name="description" content="A tiny Windows tray app that adds lockable, named window layouts on top of PowerToys FancyZones. Arrange once, lock it, flip between layouts instantly.">
+<style>
+  :root{
+    --bg:#14142a; --bg2:#1a1a2e; --panel:#1d2748; --panel2:#161f3b;
+    --text:#e8e8f0; --muted:#9aa0b8; --accent:#e94560; --accent2:#ff6b81;
+    --purple:#b388ff; --green:#4ade80; --border:rgba(255,255,255,.10);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    background:radial-gradient(1200px 700px at 80% -10%,rgba(179,136,255,.14),transparent 60%),
+               radial-gradient(900px 600px at 0% 0%,rgba(233,69,96,.12),transparent 55%),
+               var(--bg);
+    color:var(--text);line-height:1.65;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1040px;margin:0 auto;padding:0 22px}
+  a{color:var(--purple);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* nav */
+  nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+  .brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:18px}
+  .logo{width:34px;height:34px;border-radius:9px;background:var(--panel);
+    display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:3px;padding:5px;
+    border:1px solid var(--border)}
+  .logo i{border-radius:3px;background:#3a4670;display:block}
+  .logo i.on{background:var(--accent)}
+  .nav-links{display:flex;gap:22px;align-items:center;font-size:14px}
+  .nav-links a{color:var(--muted)}
+  .btn{display:inline-block;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff;font-weight:600;padding:11px 20px;border-radius:10px;border:none;cursor:pointer;
+    box-shadow:0 8px 24px rgba(233,69,96,.32);transition:transform .15s,box-shadow .15s}
+  .btn:hover{transform:translateY(-2px);text-decoration:none;box-shadow:0 12px 30px rgba(233,69,96,.42)}
+  .btn.ghost{background:transparent;border:1px solid var(--border);box-shadow:none;color:var(--text)}
+
+  /* hero */
+  header.hero{padding:46px 0 30px;display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:center}
+  .eyebrow{display:inline-block;font-size:12.5px;letter-spacing:.5px;text-transform:uppercase;
+    color:var(--purple);background:rgba(179,136,255,.12);padding:5px 11px;border-radius:99px;
+    border:1px solid rgba(179,136,255,.25);margin-bottom:16px}
+  h1{font-size:44px;line-height:1.1;letter-spacing:-.5px;margin-bottom:16px}
+  h1 .grad{background:linear-gradient(120deg,var(--accent2),var(--purple));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:18px;color:#cfd3e6;max-width:540px;margin-bottom:26px}
+  .cta{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .cta small{color:var(--muted);font-size:13px}
+
+  /* hero visual */
+  .demo{background:var(--panel2);border:1px solid var(--border);border-radius:18px;padding:16px;
+    box-shadow:0 30px 60px rgba(0,0,0,.4)}
+  .demo-bar{display:flex;gap:7px;padding:4px 6px 12px}
+  .demo-bar span{width:11px;height:11px;border-radius:50%;background:#3a4670}
+  .demo-bar span:nth-child(1){background:#ff5f57}.demo-bar span:nth-child(2){background:#febc2e}.demo-bar span:nth-child(3){background:#28c840}
+  .zones{display:grid;grid-template-columns:1.4fr 1fr;grid-template-rows:1fr 1fr;gap:10px;height:230px}
+  .zone{border-radius:10px;border:1px solid var(--border);background:#222d52;
+    display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;
+    position:relative;overflow:hidden}
+  .zone.tall{grid-row:1 / span 2}
+  .zone.live{border-color:var(--accent);background:linear-gradient(135deg,rgba(233,69,96,.22),#222d52)}
+  .zone .lbl{position:absolute;top:8px;left:8px;font-size:11px;font-weight:600;color:#fff;
+    background:rgba(233,69,96,.85);padding:2px 8px;border-radius:6px}
+  .tag-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .chip{font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--border);
+    padding:5px 11px;border-radius:8px}
+  .chip b{color:var(--text)}
+  .chip.active{color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none}
+
+  /* sections */
+  section{padding:44px 0}
+  h2{font-size:28px;letter-spacing:-.3px;margin-bottom:8px}
+  .sub{color:var(--muted);margin-bottom:28px;max-width:640px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px}
+  .card .ic{width:40px;height:40px;border-radius:10px;background:rgba(179,136,255,.14);
+    display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px}
+  .card h3{font-size:17px;margin-bottom:6px}
+  .card p{color:var(--muted);font-size:14.5px}
+
+  /* steps */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;counter-reset:s}
+  .step{background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:22px;position:relative}
+  .step::before{counter-increment:s;content:counter(s);position:absolute;top:-14px;left:20px;
+    width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:15px}
+  .step h3{font-size:16px;margin:8px 0 6px}
+  .step p{color:var(--muted);font-size:14px}
+  kbd{font-family:Consolas,'Courier New',monospace;background:#0f1730;border:1px solid var(--border);
+    border-bottom-width:2px;border-radius:6px;padding:2px 8px;font-size:13px;color:#ffd9a0;white-space:nowrap}
+
+  /* hotkeys table */
+  .keys{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);
+    border-radius:var(--radius);overflow:hidden}
+  .keys td{padding:15px 20px;border-bottom:1px solid var(--border);font-size:15px}
+  .keys tr:last-child td{border-bottom:none}
+  .keys td:last-child{text-align:right}
+  .note{font-size:13.5px;color:var(--muted);margin-top:12px}
+
+  /* limitation callout */
+  .callout{background:linear-gradient(135deg,rgba(245,185,125,.10),var(--panel));
+    border:1px solid rgba(245,185,125,.35);border-left:4px solid #f5b97d;border-radius:12px;padding:22px 24px}
+  .callout h3{font-size:18px;margin-bottom:6px;color:#f5b97d}
+  .callout p{color:#d8dcec;font-size:14.5px}
+
+  footer{border-top:1px solid var(--border);padding:30px 0 50px;color:var(--muted);font-size:13.5px;
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:30px}
+
+  @media(max-width:820px){
+    header.hero{grid-template-columns:1fr;padding-top:24px}
+    .grid3,.steps{grid-template-columns:1fr}
+    h1{font-size:34px}.nav-links{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <div class="brand">
+      <div class="logo"><i class="on"></i><i></i><i></i><i></i></div>
+      Fancy Schmancy Zones
+    </div>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#keys">Hotkeys</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/Remagent001/fancy-schmancy-zones">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <span class="eyebrow">Add-on for PowerToys FancyZones</span>
+      <h1>Lock your window layouts.<br><span class="grad">Flip between them instantly.</span></h1>
+      <p class="lede">Arrange your windows once, <b>lock</b> that arrangement as a named layout,
+        and jump between layouts with a hotkey. The feature FancyZones users have been asking
+        for — finally here, as a tiny tray app.</p>
+      <div class="cta">
+        <a class="btn" href="https://github.com/Remagent001/fancy-schmancy-zones/releases/latest">⬇ Download for Windows</a>
+        <a class="btn ghost" href="https://github.com/Remagent001/fancy-schmancy-zones">View source</a>
+        <small>Free &amp; open source · no admin · no .NET needed</small>
+      </div>
+    </div>
+
+    <div class="demo" aria-hidden="true">
+      <div class="demo-bar"><span></span><span></span><span></span></div>
+      <div class="zones">
+        <div class="zone tall live"><span class="lbl">Coding</span>Editor</div>
+        <div class="zone">Docs</div>
+        <div class="zone">Terminal</div>
+      </div>
+      <div class="tag-row">
+        <span class="chip active">● Coding</span>
+        <span class="chip">Email</span>
+        <span class="chip">Research</span>
+        <span class="chip">Ctrl+Alt+Shift+Q to flip →</span>
+      </div>
+    </div>
+  </header>
+
+  <section id="what">
+    <h2>What it does</h2>
+    <p class="sub">FancyZones still snaps your windows into zones. Fancy Schmancy Zones remembers
+      each arrangement and brings it back — so a whole layout becomes one thing you can toggle to.</p>
+    <div class="grid3">
+      <div class="card">
+        <div class="ic">🔒</div>
+        <h3>Lock a layout</h3>
+        <p>Capture every window exactly where it sits and save it under a name like “Coding” or “Email.”</p>
+      </div>
+      <div class="card">
+        <div class="ic">🔁</div>
+        <h3>Flip between layouts</h3>
+        <p>One hotkey restores a layout — each window jumps back to its spot and comes to the front.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🎛️</div>
+        <h3>Manage from the tray</h3>
+        <p>Left- or right-click the tray icon to pick, rename, update, or delete any layout.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">Three steps. No setup, no config files.</p>
+    <div class="steps">
+      <div class="step">
+        <h3>Arrange your windows</h3>
+        <p>Use FancyZones (Shift-drag into zones) or just place windows where you like them.</p>
+      </div>
+      <div class="step">
+        <h3>Lock it</h3>
+        <p>Press <kbd>Ctrl+Alt+Shift+L</kbd> and give the arrangement a name. Build as many as you want.</p>
+      </div>
+      <div class="step">
+        <h3>Flip anytime</h3>
+        <p>Press <kbd>Ctrl+Alt+Shift+Q</kbd> to cycle to the next layout — windows snap back into place.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="keys">
+    <h2>Hotkeys</h2>
+    <p class="sub">They use a low-level keyboard listener, so they keep working even when other
+      utilities have grabbed common shortcuts. Prefer the mouse? Everything’s in the tray menu too.</p>
+    <table class="keys">
+      <tr><td>Lock current layout</td><td><kbd>Ctrl + Alt + Shift + L</kbd></td></tr>
+      <tr><td>Flip to next layout</td><td><kbd>Ctrl + Alt + Shift + Q</kbd></td></tr>
+      <tr><td>Flip to previous layout</td><td><kbd>Ctrl + Alt + Shift + W</kbd></td></tr>
+    </table>
+    <p class="note">Your layouts are stored in <code>%APPDATA%\FancySchmancyZones\layouts.json</code>.</p>
+  </section>
+
+  <section id="install">
+    <h2>Install</h2>
+    <p class="sub">A normal one-click installer. Installs just for you (no admin), and the app is
+      self-contained — you don’t need to install anything else.</p>
+    <div class="steps">
+      <div class="step">
+        <h3>Download</h3>
+        <p>Grab <b>FancySchmancyZones-Setup</b> from the <a href="https://github.com/Remagent001/fancy-schmancy-zones/releases/latest">latest release</a>.</p>
+      </div>
+      <div class="step">
+        <h3>Run it</h3>
+        <p>It creates a Start Menu shortcut. You can tick <b>“Start automatically when I sign in.”</b></p>
+      </div>
+      <div class="step">
+        <h3>Look for the tray icon</h3>
+        <p>The little grid icon near your clock (under the <b>^</b> arrow). Click it to begin.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="limits">
+    <div class="callout">
+      <h3>⚠ One current limitation — Windows Virtual Desktops</h3>
+      <p>A layout only captures windows on the <b>desktop you’re currently on</b>. If you spread
+        windows across several Windows virtual desktops, the app won’t see the ones on other desktops.
+        Full multi-desktop support needs undocumented Windows features that change with every update —
+        it’s on the roadmap, but it’s a hard problem. For now, one set of layouts per desktop works great.</p>
+    </div>
+  </section>
+
+  <footer>
+    <div>Fancy Schmancy Zones · MIT licensed · made with FancyZones, not against it.</div>
+    <div><a href="https://github.com/Remagent001/fancy-schmancy-zones">github.com/Remagent001/fancy-schmancy-zones</a></div>
+  </footer>
+
+</div>
+</body>
+</html>
