@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3 — 2026-06-25
+
+- **Really fixed the hang this time.** The freeze came from an old "force focus" trick
+  (`AttachThreadInput`) that ties our app's input to the app we're switching to — and if that app
+  (e.g. Outlook) is busy, both lock up. Removed it. All window moves are now non-blocking
+  (`ShowWindowAsync` + `SWP_ASYNCWINDOWPOS`) and run on a background thread, so a flip can never
+  freeze the app or your keyboard.
+
 ## 0.3.2 — 2026-06-25
 
 - **Fixed: app could hang/crash** (Windows "app hang") when saving a layout or flipping near a

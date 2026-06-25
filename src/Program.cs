@@ -256,11 +256,40 @@ internal sealed class TrayContext : ApplicationContext
         return layout;
     }
 
+    private volatile bool _activating;
+
     private void Activate(int idx)
     {
         if (idx < 0 || idx >= _state.Layouts.Count) return;
-        var layout = _state.Layouts[idx];
+        if (_activating) return;          // ignore rapid repeat flips while one is in flight
+        _activating = true;
 
+        var layout = _state.Layouts[idx];
+        _currentIndex = idx;
+        RebuildMenu();
+
+        // Do all the window shuffling OFF the UI thread. Even though the calls are now
+        // non-blocking, keeping them off the UI thread guarantees the app and keyboard
+        // input stay responsive no matter what other apps (e.g. Outlook) are doing.
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            int restored = 0;
+            try { restored = ShuffleToLayout(layout); }
+            catch (Exception ex) { Program.LogCrash(ex); }
+            finally { _activating = false; }
+
+            try
+            {
+                _sync.BeginInvoke((Action)(() => Notify($"Switched to \"{layout.Name}\"",
+                    restored == layout.Windows.Count ? $"{restored} window(s)." : $"{restored} of {layout.Windows.Count} window(s) found.")));
+            }
+            catch { }
+        });
+    }
+
+    /// <summary>Move/raise each of the layout's windows. Runs on a background thread.</summary>
+    private static int ShuffleToLayout(LockedLayout layout)
+    {
         var live = WindowManager.GetAltTabWindows();
         var used = new HashSet<IntPtr>();
         IntPtr primary = IntPtr.Zero;
@@ -280,11 +309,7 @@ internal sealed class TrayContext : ApplicationContext
         }
 
         if (primary != IntPtr.Zero) WindowManager.Focus(primary);
-
-        _currentIndex = idx;
-        RebuildMenu();
-        Notify($"Switched to \"{layout.Name}\"",
-            restored == layout.Windows.Count ? $"{restored} window(s)." : $"{restored} of {layout.Windows.Count} window(s) found.");
+        return restored;
     }
 
     /// <summary>Find the live window that matches a saved one: live handle first, then process+title.</summary>

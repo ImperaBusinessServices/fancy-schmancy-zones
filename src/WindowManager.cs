@@ -70,32 +70,30 @@ public static class WindowManager
 
     // ---- Movement & focus ----
 
+    // IMPORTANT: every cross-process window call below is NON-BLOCKING. We use
+    // ShowWindowAsync (posts, never waits) and SWP_ASYNCWINDOWPOS, and we do NOT use
+    // AttachThreadInput. Attaching our input queue to another app's (e.g. Outlook) and
+    // any synchronous Set* call can deadlock when that app is busy — which showed up as
+    // a Windows "app hang." Best-effort and safe beats forceful and frozen.
+
     public static void MoveTo(IntPtr hwnd, Rect b)
     {
-        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-        SetWindowPos(hwnd, IntPtr.Zero, b.X, b.Y, b.W, b.H, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (IsIconic(hwnd)) ShowWindowAsync(hwnd, SW_RESTORE);
+        SetWindowPos(hwnd, IntPtr.Zero, b.X, b.Y, b.W, b.H, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
 
-    /// <summary>Raise a window to the top of the z-order without stealing focus.</summary>
+    /// <summary>Raise a window toward the top without stealing focus.</summary>
     public static void RaiseToTop(IntPtr hwnd)
     {
-        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (IsIconic(hwnd)) ShowWindowAsync(hwnd, SW_RESTORE);
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
 
-    /// <summary>Give a window real keyboard focus, working around Windows' focus-stealing guard.</summary>
+    /// <summary>Best-effort bring a window to the foreground (no input-queue attaching — that can hang).</summary>
     public static void Focus(IntPtr hwnd)
     {
-        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-
-        IntPtr foreground = GetForegroundWindow();
-        uint fgThread = GetWindowThreadProcessId(foreground, out _);
-        uint thisThread = GetCurrentThreadId();
-
-        AttachThreadInput(thisThread, fgThread, true);
-        BringWindowToTop(hwnd);
+        if (IsIconic(hwnd)) ShowWindowAsync(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
-        AttachThreadInput(thisThread, fgThread, false);
     }
 
     public static bool IsAlive(IntPtr hwnd) => hwnd != IntPtr.Zero && IsWindow(hwnd);
@@ -114,13 +112,9 @@ public static class WindowManager
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT r);
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
     [DllImport("user32.dll")] private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
-    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int cmd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
-    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hwnd);
-    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint from, uint to, bool attach);
-    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -136,5 +130,6 @@ public static class WindowManager
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private static readonly IntPtr HWND_TOP = IntPtr.Zero;
 }
