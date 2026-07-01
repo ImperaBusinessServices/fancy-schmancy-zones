@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -206,6 +207,16 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Flip layouts:  double-tap Ctrl") { Enabled = false });
         menu.Items.Add(new ToolStripMenuItem($"   or  next {_nextKeyLabel}  ·  prev {_prevKeyLabel}") { Enabled = false });
+
+        var settings = new ToolStripMenuItem("Settings");
+        var matchProfilesItem = new ToolStripMenuItem("Match Chrome/Edge browser profiles")
+        {
+            Checked = _state.Settings.MatchBrowserProfiles
+        };
+        matchProfilesItem.Click += (_, _) => ToggleMatchBrowserProfiles();
+        settings.DropDownItems.Add(matchProfilesItem);
+        menu.Items.Add(settings);
+
         menu.Items.Add("How it works", null, (_, _) => ShowHelp());
         menu.Items.Add("Quit", null, (_, _) => Quit());
 
@@ -215,6 +226,17 @@ internal sealed class TrayContext : ApplicationContext
 
     // ---- Actions ----
 
+    private void ToggleMatchBrowserProfiles()
+    {
+        _state.Settings.MatchBrowserProfiles = !_state.Settings.MatchBrowserProfiles;
+        _state.Save();
+        RebuildMenu();
+        Notify("Setting changed",
+            _state.Settings.MatchBrowserProfiles
+                ? "Layouts will remember which Chrome/Edge profile each window used."
+                : "Browser profiles will be ignored — all Chrome/Edge windows are treated the same.");
+    }
+
     private void LockCurrent()
     {
         var name = NameForm.Ask("Lock layout", "Name this layout (e.g. \"Coding\", \"Email\"):");
@@ -222,31 +244,52 @@ internal sealed class TrayContext : ApplicationContext
 
         // Re-locking onto an existing name = replace/update it.
         int existing = _state.Layouts.FindIndex(l => l.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        var layout = CaptureCurrent(name);
+        var layout = CaptureCurrent(name, _state.Settings.MatchBrowserProfiles, out string? profileWarning);
 
         if (existing >= 0) { _state.Layouts[existing] = layout; _currentIndex = existing; }
         else { _state.Layouts.Add(layout); _currentIndex = _state.Layouts.Count - 1; }
 
         _state.Save();
         RebuildMenu();
-        Notify("Layout locked", $"\"{name}\" — {layout.Windows.Count} window(s).");
+        Notify("Layout locked", profileWarning ?? $"\"{name}\" — {layout.Windows.Count} window(s).");
     }
 
     private void UpdateLayout(int idx)
     {
         string name = _state.Layouts[idx].Name;
-        _state.Layouts[idx] = CaptureCurrent(name);
+        _state.Layouts[idx] = CaptureCurrent(name, _state.Settings.MatchBrowserProfiles, out string? profileWarning);
         _currentIndex = idx;
         _state.Save();
         RebuildMenu();
-        Notify("Layout updated", $"\"{name}\" now matches your current windows.");
+        Notify("Layout updated", profileWarning ?? $"\"{name}\" now matches your current windows.");
     }
 
-    private static LockedLayout CaptureCurrent(string name)
+    /// <summary>
+    /// If any captured Chrome/Edge window's profile couldn't be pinned down — most often
+    /// because two of that browser's profiles share the same display name — say so, rather
+    /// than silently guessing which one it was.
+    /// </summary>
+    private static string? BuildProfileWarning(List<LiveWindow> live)
+    {
+        var unresolvedBrowsers = live
+            .Where(w => WindowManager.IsChromium(w.Process) && string.IsNullOrEmpty(w.Profile))
+            .Select(w => w.Process).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(BrowserProfiles.HasAmbiguousProfiles)
+            .ToList();
+        if (unresolvedBrowsers.Count == 0) return null;
+
+        return "Heads up: some of your Chrome/Edge profiles share the same name, so those windows " +
+               "couldn't be matched to a specific one — give them distinct names in the browser to fix this. " +
+               "(Or turn off profile matching in Settings.)";
+    }
+
+    private static LockedLayout CaptureCurrent(string name, bool matchProfiles, out string? profileWarning)
     {
         var layout = new LockedLayout { Name = name };
         var live = WindowManager.GetAltTabWindows();
-        WindowManager.FillProfiles(live);   // note which Chrome/Edge profile each browser window is
+        if (matchProfiles) WindowManager.FillProfiles(live);   // note which Chrome/Edge profile each browser window is
+        profileWarning = matchProfiles ? BuildProfileWarning(live) : null;
+
         foreach (var w in live)
         {
             layout.Windows.Add(new SavedWindow
@@ -280,7 +323,7 @@ internal sealed class TrayContext : ApplicationContext
         System.Threading.Tasks.Task.Run(() =>
         {
             int restored = 0;
-            try { restored = ShuffleToLayout(layout); }
+            try { restored = ShuffleToLayout(layout, _state.Settings.MatchBrowserProfiles); }
             catch (Exception ex) { Program.LogCrash(ex); }
             finally { _activating = false; }
 
@@ -294,17 +337,17 @@ internal sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>Move/raise each of the layout's windows. Runs on a background thread.</summary>
-    private static int ShuffleToLayout(LockedLayout layout)
+    private static int ShuffleToLayout(LockedLayout layout, bool matchProfiles)
     {
         var live = WindowManager.GetAltTabWindows();
-        WindowManager.FillProfiles(live);   // so we place each Chrome window into its own profile's spot
+        if (matchProfiles) WindowManager.FillProfiles(live);   // so we place each Chrome window into its own profile's spot
         var used = new HashSet<IntPtr>();
         IntPtr primary = IntPtr.Zero;
         int restored = 0;
 
         foreach (var saved in layout.Windows)
         {
-            IntPtr hwnd = Resolve(saved, live, used);
+            IntPtr hwnd = Resolve(saved, live, used, matchProfiles);
             if (hwnd == IntPtr.Zero) continue;
             used.Add(hwnd);
 
@@ -333,13 +376,15 @@ internal sealed class TrayContext : ApplicationContext
         _currentIndex = idx;
         RebuildMenu();
 
+        bool matchProfiles = _state.Settings.MatchBrowserProfiles;
+
         System.Threading.Tasks.Task.Run(() =>
         {
             int launched = 0;
             try
             {
                 var live = WindowManager.GetAltTabWindows();
-                WindowManager.FillProfiles(live);
+                if (matchProfiles) WindowManager.FillProfiles(live);
 
                 // Identify an open app by program + browser profile, so a Chrome profile that
                 // isn't open yet still gets launched even though chrome.exe is already running.
@@ -352,10 +397,11 @@ internal sealed class TrayContext : ApplicationContext
                 foreach (var saved in layout.Windows)
                 {
                     if (string.IsNullOrEmpty(saved.ExePath)) continue;
-                    string key = Key(saved.Process, saved.Profile);
+                    string profile = matchProfiles ? saved.Profile : "";
+                    string key = Key(saved.Process, profile);
                     if (runningKeys.Contains(key)) continue;          // that app/profile already open
                     if (!launchedKeys.Add(key)) continue;             // don't launch the same app/profile twice
-                    if (WindowManager.Launch(saved.ExePath, WindowManager.ProfileArgs(saved.Profile))) launched++;
+                    if (WindowManager.Launch(saved.ExePath, WindowManager.ProfileArgs(profile))) launched++;
                 }
 
                 // Give the freshly launched apps time to put their windows up, then arrange.
@@ -370,7 +416,7 @@ internal sealed class TrayContext : ApplicationContext
                     }
                 }
 
-                ShuffleToLayout(layout);
+                ShuffleToLayout(layout, matchProfiles);
             }
             catch (Exception ex) { Program.LogCrash(ex); }
             finally { _activating = false; }
@@ -387,14 +433,14 @@ internal sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>Find the live window that matches a saved one: live handle first, then process+title.</summary>
-    private static IntPtr Resolve(SavedWindow saved, List<LiveWindow> live, HashSet<IntPtr> used)
+    private static IntPtr Resolve(SavedWindow saved, List<LiveWindow> live, HashSet<IntPtr> used, bool matchProfiles)
     {
         if (WindowManager.IsAlive(saved.Hwnd) && !used.Contains(saved.Hwnd))
             return saved.Hwnd;
 
         // Chrome/Edge with a known profile: only ever match the SAME profile, so a window
         // never lands in the wrong profile's spot. Prefer the same page title within it.
-        if (WindowManager.IsChromium(saved.Process) && !string.IsNullOrEmpty(saved.Profile))
+        if (matchProfiles && WindowManager.IsChromium(saved.Process) && !string.IsNullOrEmpty(saved.Profile))
         {
             IntPtr firstOfProfile = IntPtr.Zero;
             foreach (var w in live)
@@ -469,7 +515,16 @@ internal sealed class TrayContext : ApplicationContext
             $"   • {_nextKeyLabel}  →  next locked layout\n" +
             $"   • {_prevKeyLabel}  →  previous locked layout\n\n" +
             "Flipping brings that layout's windows to their saved spots and to the front.\n" +
-            "Click the tray icon (left or right) to pick, rename, update, or delete layouts.",
+            "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
+            "REOPENING APPS:\n" +
+            "\"Open apps + arrange\" (under Manage layouts) launches any apps in that layout that " +
+            "aren't already running, then arranges everything — handy after a reboot.\n\n" +
+            "CHROME/EDGE PROFILES:\n" +
+            "Layouts remember which browser profile each window used and reopen that same one. " +
+            "This is read from the little profile button in the browser's toolbar, so if two " +
+            "profiles share the exact same name, those windows can't be told apart — give them " +
+            "distinct names in the browser to fix it. You can turn this off entirely under " +
+            "Settings → \"Match Chrome/Edge browser profiles.\"",
             "How it works — Fancy Schmancy Zones",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
     }

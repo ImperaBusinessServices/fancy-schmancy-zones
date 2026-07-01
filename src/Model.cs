@@ -33,10 +33,20 @@ public sealed class LockedLayout
     public List<SavedWindow> Windows { get; set; } = new();
 }
 
+/// <summary>User-adjustable app behavior, persisted alongside layouts.</summary>
+public sealed class AppSettings
+{
+    // When on, layouts remember which Chrome/Edge profile each browser window used, and
+    // reopen/match that same profile. Turn off to treat all browser windows generically
+    // (the pre-0.5.0 behavior) — e.g. if profile detection ever picks the wrong window.
+    public bool MatchBrowserProfiles { get; set; } = true;
+}
+
 /// <summary>Everything we persist between runs.</summary>
 public sealed class AppState
 {
     public List<LockedLayout> Layouts { get; set; } = new();
+    public AppSettings Settings { get; set; } = new();
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

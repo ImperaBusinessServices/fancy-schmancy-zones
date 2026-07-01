@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — 2026-07-01
+
+- **Edge profiles now work too** (previously only Chrome). Edge labels its profile button
+  differently under the hood; detection now understands both.
+- **Fixed a real bug:** if two browser profiles shared the exact same display name, the app
+  could previously guess wrong about which one a window belonged to. Now it recognizes the
+  name is ambiguous and safely falls back to normal (profile-blind) matching for those windows,
+  instead of guessing.
+- When you lock a layout and some profiles couldn't be told apart, you'll get a heads-up
+  explaining why (and that renaming the profile in the browser fixes it) — nothing is silent.
+- **New setting:** tray → **Settings → "Match Chrome/Edge browser profiles"** — turn this off to
+  go back to treating all browser windows generically (the pre-0.5.0 behavior), no renaming
+  required.
+- "How it works" now explains both the app-launching and browser-profile features.
+
 ## 0.5.0 — 2026-06-30
 
 - **Chrome/Edge profiles are now remembered.** A layout records *which profile* each browser
