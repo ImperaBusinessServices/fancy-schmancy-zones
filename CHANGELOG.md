@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 — 2026-06-30
+
+- **Chrome/Edge profiles are now remembered.** A layout records *which profile* each browser
+  window used, so "Open apps + arrange" reopens the correct profile in the correct spot — not
+  just a default Chrome window. Works across your 8 profiles.
+- How it reads the profile: Chromium doesn't expose it through the window or process, so the app
+  reads the toolbar's profile button (the little avatar) via Windows accessibility and maps that
+  name to Chrome's profile folder. Detection is ~10ms per window.
+- Tip: if two profiles share the exact same display name, give one a distinct name in Chrome so
+  the app can tell them apart.
+
 ## 0.4.0 — 2026-06-30
 
 - **New: launch a layout's apps automatically.** Layouts now also remember each window's

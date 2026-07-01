@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -14,6 +15,10 @@ public sealed class SavedWindow
 
     // Full path to the program's .exe, captured at lock time so we can relaunch it later.
     public string ExePath { get; set; } = "";
+
+    // For Chrome/Edge: the profile folder this window used (e.g. "Profile 10"), so we relaunch
+    // the right profile and drop it in the right spot. Empty for non-browser windows.
+    public string Profile { get; set; } = "";
 
     public Rect Bounds { get; set; }
 

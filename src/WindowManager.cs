@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -13,6 +14,11 @@ public sealed class LiveWindow
     public string Title { get; init; } = "";
     public string Process { get; init; } = "";
     public string ExePath { get; init; } = "";
+
+    // Chrome/Edge profile folder (e.g. "Profile 10"). Filled in on demand, not during
+    // enumeration, so plain window listing stays cheap. Empty for non-browser windows.
+    public string Profile { get; set; } = "";
+
     public Rect Bounds { get; init; }
 }
 
@@ -107,8 +113,26 @@ public static class WindowManager
 
     public static bool IsAlive(IntPtr hwnd) => hwnd != IntPtr.Zero && IsWindow(hwnd);
 
-    /// <summary>Launch a program by its .exe path. Returns true if it started.</summary>
-    public static bool Launch(string exePath)
+    /// <summary>True for Chromium browsers whose windows are split across profiles.</summary>
+    public static bool IsChromium(string proc) =>
+        proc.Equals("chrome", StringComparison.OrdinalIgnoreCase) ||
+        proc.Equals("msedge", StringComparison.OrdinalIgnoreCase) ||
+        proc.Equals("brave", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The command-line switch to open a specific browser profile ("" if none).</summary>
+    public static string ProfileArgs(string profile) =>
+        string.IsNullOrEmpty(profile) ? "" : $"--profile-directory=\"{profile}\"";
+
+    /// <summary>Fill in the browser profile for each Chromium window in the list (via UI Automation).</summary>
+    public static void FillProfiles(List<LiveWindow> live)
+    {
+        foreach (var w in live)
+            if (IsChromium(w.Process))
+                w.Profile = BrowserProfiles.DetectFolder(w.Hwnd, w.Process);
+    }
+
+    /// <summary>Launch a program by its .exe path, optionally with arguments. Returns true if it started.</summary>
+    public static bool Launch(string exePath, string args = "")
     {
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath)) return false;
         try
@@ -116,6 +140,7 @@ public static class WindowManager
             Process.Start(new ProcessStartInfo
             {
                 FileName = exePath,
+                Arguments = args,
                 UseShellExecute = true,               // let Windows handle it like a double-click
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? ""
             });

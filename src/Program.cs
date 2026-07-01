@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -244,13 +245,16 @@ internal sealed class TrayContext : ApplicationContext
     private static LockedLayout CaptureCurrent(string name)
     {
         var layout = new LockedLayout { Name = name };
-        foreach (var w in WindowManager.GetAltTabWindows())
+        var live = WindowManager.GetAltTabWindows();
+        WindowManager.FillProfiles(live);   // note which Chrome/Edge profile each browser window is
+        foreach (var w in live)
         {
             layout.Windows.Add(new SavedWindow
             {
                 Title = w.Title,
                 Process = w.Process,
                 ExePath = w.ExePath,
+                Profile = w.Profile,
                 Bounds = w.Bounds,
                 Hwnd = w.Hwnd
             });
@@ -293,6 +297,7 @@ internal sealed class TrayContext : ApplicationContext
     private static int ShuffleToLayout(LockedLayout layout)
     {
         var live = WindowManager.GetAltTabWindows();
+        WindowManager.FillProfiles(live);   // so we place each Chrome window into its own profile's spot
         var used = new HashSet<IntPtr>();
         IntPtr primary = IntPtr.Zero;
         int restored = 0;
@@ -334,19 +339,23 @@ internal sealed class TrayContext : ApplicationContext
             try
             {
                 var live = WindowManager.GetAltTabWindows();
+                WindowManager.FillProfiles(live);
 
-                // Which processes already have a window open right now?
-                var runningProcs = new HashSet<string>(
-                    live.Select(w => w.Process), StringComparer.OrdinalIgnoreCase);
+                // Identify an open app by program + browser profile, so a Chrome profile that
+                // isn't open yet still gets launched even though chrome.exe is already running.
+                static string Key(string proc, string profile) => proc + "|" + profile;
 
-                // Launch each distinct .exe whose app isn't already showing a window.
-                var launchedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var runningKeys = new HashSet<string>(
+                    live.Select(w => Key(w.Process, w.Profile)), StringComparer.OrdinalIgnoreCase);
+
+                var launchedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var saved in layout.Windows)
                 {
                     if (string.IsNullOrEmpty(saved.ExePath)) continue;
-                    if (runningProcs.Contains(saved.Process)) continue;   // already open
-                    if (!launchedPaths.Add(saved.ExePath)) continue;      // don't launch the same exe twice
-                    if (WindowManager.Launch(saved.ExePath)) launched++;
+                    string key = Key(saved.Process, saved.Profile);
+                    if (runningKeys.Contains(key)) continue;          // that app/profile already open
+                    if (!launchedKeys.Add(key)) continue;             // don't launch the same app/profile twice
+                    if (WindowManager.Launch(saved.ExePath, WindowManager.ProfileArgs(saved.Profile))) launched++;
                 }
 
                 // Give the freshly launched apps time to put their windows up, then arrange.
@@ -382,6 +391,22 @@ internal sealed class TrayContext : ApplicationContext
     {
         if (WindowManager.IsAlive(saved.Hwnd) && !used.Contains(saved.Hwnd))
             return saved.Hwnd;
+
+        // Chrome/Edge with a known profile: only ever match the SAME profile, so a window
+        // never lands in the wrong profile's spot. Prefer the same page title within it.
+        if (WindowManager.IsChromium(saved.Process) && !string.IsNullOrEmpty(saved.Profile))
+        {
+            IntPtr firstOfProfile = IntPtr.Zero;
+            foreach (var w in live)
+            {
+                if (used.Contains(w.Hwnd) || w.Process != saved.Process ||
+                    !string.Equals(w.Profile, saved.Profile, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (w.Title == saved.Title) return w.Hwnd;
+                if (firstOfProfile == IntPtr.Zero) firstOfProfile = w.Hwnd;
+            }
+            return firstOfProfile;
+        }
 
         // Exact title + process.
         foreach (var w in live)
