@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.2 — 2026-07-02
+
+- **Fixed: switching layouts could still leave a window or two on top.** Two causes, both fixed:
+  - The order of operations was wrong: the layout's windows were raised *first*, then everything
+    else was minimized — so any window that ignored the minimize request ended up sitting on top.
+    Now everything else is minimized first, and the layout's windows are raised last, so the
+    layout always gets the final word on what's visible.
+  - Some windows simply refuse to minimize (apps with custom minimize handling, or admin-level
+    windows the app isn't allowed to touch). Those are now pushed to the very back of the stack
+    instead of being left covering the layout.
+- Every layout switch is now recorded in `%APPDATA%\FancySchmancyZones\flip.log` (which window
+  matched which saved spot, and anything that refused to minimize) — so if a window ever
+  misbehaves again, the log says exactly which one and why.
+
 ## 0.8.1 — 2026-07-01
 
 - **Found and fixed the real "lost window" bug.** Diagnosis on a live machine showed the stuck

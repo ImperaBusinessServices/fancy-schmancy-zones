@@ -135,22 +135,32 @@ public static class WindowManager
     /// <summary>
     /// Minimize every window in the list, then verify — a busy window (e.g. a terminal mid-output)
     /// can occasionally miss the first "please minimize" message, since we deliberately never block
-    /// waiting on another app. Retries a few times for any stragglers instead of leaving them behind.
+    /// waiting on another app. Retries a few times; anything still refusing (custom minimize
+    /// handling, or an elevated window we can't touch) is pushed to the bottom of the z-order so
+    /// it can't cover the layout. Returns those stubborn windows so the caller can log them.
     /// Windows already minimized are left alone (never re-poked) and, for every window touched,
     /// its saved "restore to" position is checked first so it can never come back invisible later.
     /// </summary>
-    public static void MinimizeAll(IEnumerable<IntPtr> hwnds)
+    public static List<IntPtr> MinimizeAll(IEnumerable<IntPtr> hwnds)
     {
         var all = hwnds.Where(IsAlive).ToList();
         foreach (var h in all) EnsureOnScreen(h);
 
         var remaining = all.Where(h => !IsIconic(h)).ToList();
-        for (int attempt = 0; attempt < 4 && remaining.Count > 0; attempt++)
+        for (int attempt = 0; attempt < 5 && remaining.Count > 0; attempt++)
         {
             foreach (var h in remaining) Minimize(h);
-            System.Threading.Thread.Sleep(120);
+            System.Threading.Thread.Sleep(150);
             remaining = remaining.Where(h => IsAlive(h) && !IsIconic(h)).ToList();
         }
+
+        // Some windows refuse to minimize no matter how often we ask — apps with custom
+        // minimize handling, or elevated (admin) windows we aren't allowed to poke. Don't
+        // let them keep covering the layout: push them to the very bottom of the stack.
+        foreach (var h in remaining)
+            SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+        return remaining;
     }
 
     /// <summary>
@@ -293,4 +303,5 @@ public static class WindowManager
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private static readonly IntPtr HWND_TOP = IntPtr.Zero;
+    private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
 }

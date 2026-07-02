@@ -402,16 +402,44 @@ internal sealed class TrayContext : ApplicationContext
     {
         var live = WindowManager.GetAltTabWindows();
         if (matchProfiles) WindowManager.FillProfiles(live);   // so we place each Chrome window into its own profile's spot
+        LogFlip($"flip to \"{layout.Name}\" ({layout.Windows.Count} saved, {live.Count} live, minimizeOthers={minimizeOthers})");
         var used = new HashSet<IntPtr>();
-        IntPtr primary = IntPtr.Zero;
-        int restored = 0;
+        var placements = new List<(IntPtr Hwnd, SavedWindow Saved)>();
 
+        // Pass 1: figure out which live window plays each saved role. No moving yet.
         foreach (var saved in layout.Windows)
         {
             IntPtr hwnd = Resolve(saved, live, used, matchProfiles);
-            if (hwnd == IntPtr.Zero) continue;
+            if (hwnd == IntPtr.Zero)
+            {
+                LogFlip($"  no match for: {saved.Process} \"{saved.Title}\"");
+                continue;
+            }
             used.Add(hwnd);
+            placements.Add((hwnd, saved));
+            var match = live.FirstOrDefault(w => w.Hwnd == hwnd);
+            LogFlip($"  {saved.Process} \"{saved.Title}\" -> \"{match?.Title}\"");
+        }
 
+        // Pass 2: minimize everything that's NOT part of this layout — leftovers from another
+        // layout, or windows opened since. Done BEFORE raising the layout's windows so that
+        // even a window that refuses to minimize ends up underneath, never on top.
+        if (minimizeOthers)
+        {
+            var stubborn = WindowManager.MinimizeAll(
+                live.Where(w => !used.Contains(w.Hwnd)).Select(w => w.Hwnd));
+            foreach (var h in stubborn)
+            {
+                var w = live.FirstOrDefault(x => x.Hwnd == h);
+                LogFlip($"  refused to minimize (pushed to back): {w?.Process} \"{w?.Title}\"");
+            }
+        }
+
+        // Pass 3: place and raise the layout's windows — the last word on what's on top.
+        IntPtr primary = IntPtr.Zero;
+        int restored = 0;
+        foreach (var (hwnd, saved) in placements)
+        {
             WindowManager.MoveTo(hwnd, saved.Bounds);
             WindowManager.RaiseToTop(hwnd);
             saved.Hwnd = hwnd;              // refresh handle for this session
@@ -419,14 +447,22 @@ internal sealed class TrayContext : ApplicationContext
             restored++;
         }
 
-        // Anything not part of THIS layout — leftovers from another layout, or windows opened
-        // since — gets minimized, so the layout you switched to is never left partly hidden.
-        // Retries a few times: a busy window (e.g. a terminal mid-output) can miss the first ask.
-        if (minimizeOthers)
-            WindowManager.MinimizeAll(live.Where(w => !used.Contains(w.Hwnd)).Select(w => w.Hwnd));
-
         if (primary != IntPtr.Zero) WindowManager.Focus(primary);
         return restored;
+    }
+
+    /// <summary>Append a line to flip.log so "a window stayed on top" reports can be diagnosed
+    /// from facts instead of guesses. Self-truncates so it can never grow unbounded.</summary>
+    internal static void LogFlip(string message)
+    {
+        try
+        {
+            string path = Path.Combine(AppState.Dir, "flip.log");
+            var fi = new FileInfo(path);
+            if (fi.Exists && fi.Length > 256 * 1024) fi.Delete();
+            File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}\n");
+        }
+        catch { }
     }
 
     /// <summary>
