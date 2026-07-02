@@ -379,10 +379,9 @@ internal sealed class TrayContext : ApplicationContext
 
         // Anything not part of THIS layout — leftovers from another layout, or windows opened
         // since — gets minimized, so the layout you switched to is never left partly hidden.
+        // Retries a few times: a busy window (e.g. a terminal mid-output) can miss the first ask.
         if (minimizeOthers)
-            foreach (var w in live)
-                if (!used.Contains(w.Hwnd))
-                    WindowManager.Minimize(w.Hwnd);
+            WindowManager.MinimizeAll(live.Where(w => !used.Contains(w.Hwnd)).Select(w => w.Hwnd));
 
         if (primary != IntPtr.Zero) WindowManager.Focus(primary);
         return restored;

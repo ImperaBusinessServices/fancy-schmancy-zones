@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -115,6 +116,24 @@ public static class WindowManager
 
     /// <summary>Minimize a window (e.g. one that isn't part of the layout being switched to).</summary>
     public static void Minimize(IntPtr hwnd) => ShowWindowAsync(hwnd, SW_MINIMIZE);
+
+    public static bool IsMinimized(IntPtr hwnd) => IsIconic(hwnd);
+
+    /// <summary>
+    /// Minimize every window in the list, then verify — a busy window (e.g. a terminal mid-output)
+    /// can occasionally miss the first "please minimize" message, since we deliberately never block
+    /// waiting on another app. Retries a few times for any stragglers instead of leaving them behind.
+    /// </summary>
+    public static void MinimizeAll(IEnumerable<IntPtr> hwnds)
+    {
+        var remaining = hwnds.Where(IsAlive).ToList();
+        for (int attempt = 0; attempt < 4 && remaining.Count > 0; attempt++)
+        {
+            foreach (var h in remaining) Minimize(h);
+            System.Threading.Thread.Sleep(120);
+            remaining = remaining.Where(h => IsAlive(h) && !IsIconic(h)).ToList();
+        }
+    }
 
     /// <summary>True for Chromium browsers whose windows are split across profiles.</summary>
     public static bool IsChromium(string proc) =>
