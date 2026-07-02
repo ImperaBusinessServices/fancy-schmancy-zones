@@ -45,6 +45,12 @@ public sealed class AppSettings
     // layout — leftovers from another layout, or anything opened since — so the layout you
     // switch to is never left partly hidden behind something else.
     public bool MinimizeOtherWindows { get; set; } = true;
+
+    // When off (the default), "Open apps + arrange" never auto-launches a terminal/console
+    // window — a blank one doesn't reproduce which folder or command was actually running in
+    // it, so it's not useful, just clutter. Already-open terminal windows are still matched
+    // and repositioned normally either way. Turn on only if you'd rather have blank ones open.
+    public bool LaunchTerminalApps { get; set; } = false;
 }
 
 /// <summary>Everything we persist between runs.</summary>

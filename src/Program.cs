@@ -223,7 +223,15 @@ internal sealed class TrayContext : ApplicationContext
         minimizeOthersItem.Click += (_, _) => ToggleMinimizeOtherWindows();
         settings.DropDownItems.Add(minimizeOthersItem);
 
+        var launchTerminalsItem = new ToolStripMenuItem("Launch terminal/console windows when opening a layout")
+        {
+            Checked = _state.Settings.LaunchTerminalApps
+        };
+        launchTerminalsItem.Click += (_, _) => ToggleLaunchTerminalApps();
+        settings.DropDownItems.Add(launchTerminalsItem);
+
         menu.Items.Add(settings);
+        menu.Items.Add("Rescue lost windows", null, (_, _) => RescueWindows());
 
         menu.Items.Add("How it works", null, (_, _) => ShowHelp());
         menu.Items.Add("Quit", null, (_, _) => Quit());
@@ -254,6 +262,32 @@ internal sealed class TrayContext : ApplicationContext
             _state.Settings.MinimizeOtherWindows
                 ? "Switching layouts will minimize anything that isn't part of the layout."
                 : "Switching layouts will leave other windows alone.");
+    }
+
+    private void ToggleLaunchTerminalApps()
+    {
+        _state.Settings.LaunchTerminalApps = !_state.Settings.LaunchTerminalApps;
+        _state.Save();
+        RebuildMenu();
+        Notify("Setting changed",
+            _state.Settings.LaunchTerminalApps
+                ? "\"Open apps + arrange\" will launch blank terminal windows for missing ones."
+                : "\"Open apps + arrange\" will skip terminal windows — open those yourself, then flip.");
+    }
+
+    /// <summary>Bring any window whose saved position is off every currently connected
+    /// monitor back onto the primary screen — e.g. one left minimized after a monitor/dock
+    /// change, that the taskbar can activate but never actually shows.</summary>
+    private void RescueWindows()
+    {
+        int fixedCount = 0;
+        foreach (var w in WindowManager.GetAltTabWindows())
+            if (WindowManager.EnsureOnScreen(w.Hwnd)) fixedCount++;
+
+        Notify("Rescue lost windows",
+            fixedCount > 0
+                ? $"Brought {fixedCount} window(s) back onto your screen."
+                : "Nothing to fix — all your windows are already on-screen.");
     }
 
     private void LockCurrent()
@@ -403,10 +437,11 @@ internal sealed class TrayContext : ApplicationContext
 
         bool matchProfiles = _state.Settings.MatchBrowserProfiles;
         bool minimizeOthers = _state.Settings.MinimizeOtherWindows;
+        bool launchTerminals = _state.Settings.LaunchTerminalApps;
 
         System.Threading.Tasks.Task.Run(() =>
         {
-            int launched = 0;
+            int launched = 0, skippedTerminals = 0;
             try
             {
                 var live = WindowManager.GetAltTabWindows();
@@ -423,10 +458,15 @@ internal sealed class TrayContext : ApplicationContext
                 foreach (var saved in layout.Windows)
                 {
                     if (string.IsNullOrEmpty(saved.ExePath)) continue;
-                    string profile = matchProfiles ? saved.Profile : "";
-                    string key = Key(saved.Process, profile);
+                    string key = Key(saved.Process, matchProfiles ? saved.Profile : "");
                     if (runningKeys.Contains(key)) continue;          // that app/profile already open
                     if (!launchedKeys.Add(key)) continue;             // don't launch the same app/profile twice
+                    if (!launchTerminals && WindowManager.IsTerminalHost(saved.Process))
+                    {
+                        skippedTerminals++;   // a blank terminal doesn't reproduce what was running in it
+                        continue;
+                    }
+                    string profile = matchProfiles ? saved.Profile : "";
                     if (WindowManager.Launch(saved.ExePath, WindowManager.ProfileArgs(profile))) launched++;
                 }
 
@@ -449,10 +489,12 @@ internal sealed class TrayContext : ApplicationContext
 
             try
             {
-                int opened = launched;
-                _sync.BeginInvoke((Action)(() => Notify($"Opened \"{layout.Name}\"",
-                    opened > 0 ? $"Launched {opened} app(s) and arranged the layout."
-                               : "All apps were already open — arranged the layout.")));
+                int opened = launched, skipped = skippedTerminals;
+                string msg = opened > 0 ? $"Launched {opened} app(s) and arranged the layout."
+                                         : "All apps were already open — arranged the layout.";
+                if (skipped > 0)
+                    msg += $" Skipped {skipped} terminal window(s) — open those yourself, then flip to snap them into place.";
+                _sync.BeginInvoke((Action)(() => Notify($"Opened \"{layout.Name}\"", msg)));
             }
             catch { }
         });

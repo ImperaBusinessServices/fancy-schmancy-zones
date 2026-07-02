@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Forms;
 
 namespace FancySchmancyZones;
 
@@ -117,16 +119,19 @@ public static class WindowManager
     /// <summary>Minimize a window (e.g. one that isn't part of the layout being switched to).</summary>
     public static void Minimize(IntPtr hwnd) => ShowWindowAsync(hwnd, SW_MINIMIZE);
 
-    public static bool IsMinimized(IntPtr hwnd) => IsIconic(hwnd);
-
     /// <summary>
     /// Minimize every window in the list, then verify — a busy window (e.g. a terminal mid-output)
     /// can occasionally miss the first "please minimize" message, since we deliberately never block
     /// waiting on another app. Retries a few times for any stragglers instead of leaving them behind.
+    /// Windows already minimized are left alone (never re-poked) and, for every window touched,
+    /// its saved "restore to" position is checked first so it can never come back invisible later.
     /// </summary>
     public static void MinimizeAll(IEnumerable<IntPtr> hwnds)
     {
-        var remaining = hwnds.Where(IsAlive).ToList();
+        var all = hwnds.Where(IsAlive).ToList();
+        foreach (var h in all) EnsureOnScreen(h);
+
+        var remaining = all.Where(h => !IsIconic(h)).ToList();
         for (int attempt = 0; attempt < 4 && remaining.Count > 0; attempt++)
         {
             foreach (var h in remaining) Minimize(h);
@@ -135,11 +140,50 @@ public static class WindowManager
         }
     }
 
+    /// <summary>
+    /// If a window's saved "restore to" position (where it reappears when un-minimized or
+    /// un-maximized) is off every currently connected monitor — e.g. left over from a docking
+    /// station or monitor that's no longer attached — move it back onto the primary screen.
+    /// Without this, a minimized window like that can look "stuck": the taskbar shows it and
+    /// clicking it does nothing visible, because it restores to a spot that no longer exists.
+    /// Returns true if it had to fix anything.
+    /// </summary>
+    public static bool EnsureOnScreen(IntPtr hwnd)
+    {
+        var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+        if (!GetWindowPlacement(hwnd, ref wp)) return false;
+
+        var r = wp.rcNormalPosition;
+        var rect = new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+        if (rect.Width <= 0 || rect.Height <= 0) return false;   // nothing sane to reposition
+        if (Screen.AllScreens.Any(s => s.Bounds.IntersectsWith(rect))) return false;   // already fine
+
+        var work = Screen.PrimaryScreen!.WorkingArea;
+        int w = Math.Min(rect.Width, work.Width - 40);
+        int h = Math.Min(rect.Height, work.Height - 40);
+        wp.rcNormalPosition = new RECT
+        {
+            Left = work.Left + 20, Top = work.Top + 20,
+            Right = work.Left + 20 + w, Bottom = work.Top + 20 + h
+        };
+        SetWindowPlacement(hwnd, ref wp);
+        return true;
+    }
+
     /// <summary>True for Chromium browsers whose windows are split across profiles.</summary>
     public static bool IsChromium(string proc) =>
         proc.Equals("chrome", StringComparison.OrdinalIgnoreCase) ||
         proc.Equals("msedge", StringComparison.OrdinalIgnoreCase) ||
         proc.Equals("brave", StringComparison.OrdinalIgnoreCase);
+
+    // Terminal/console host apps. Launching one blank doesn't reproduce what was actually
+    // running inside it (which folder, which command) — so by default these are matched
+    // and repositioned if already open, but not auto-launched.
+    private static readonly string[] TerminalHostProcesses =
+        { "WindowsTerminal", "cmd", "powershell", "pwsh", "conhost", "wt" };
+
+    public static bool IsTerminalHost(string proc) =>
+        TerminalHostProcesses.Any(p => p.Equals(proc, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The command-line switch to open a specific browser profile ("" if none).</summary>
     public static string ProfileArgs(string profile) =>
@@ -189,9 +233,25 @@ public static class WindowManager
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
+    [DllImport("user32.dll")] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WINDOWPLACEMENT lpwndpl);
+    [DllImport("user32.dll")] private static extern bool SetWindowPlacement(IntPtr hwnd, ref WINDOWPLACEMENT lpwndpl);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPLACEMENT
+    {
+        public int length;
+        public int flags;
+        public int showCmd;
+        public POINT ptMinPosition;
+        public POINT ptMaxPosition;
+        public RECT rcNormalPosition;
+    }
 
     private const int GWL_EXSTYLE = -20;
     private const long WS_EX_TOOLWINDOW = 0x00000080;

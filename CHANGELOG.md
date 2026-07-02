@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0 — 2026-07-01
+
+- **"Open apps + arrange" no longer opens blank terminal windows.** A relaunched terminal can't
+  know which folder or command was actually running in it, so by default it's skipped entirely —
+  open your terminal windows yourself, then flip to snap them into their saved spots (this already
+  works today, since terminal windows are matched by their title like anything else). Turn back on
+  under Settings → "Launch terminal/console windows when opening a layout" if you'd rather have
+  blank ones open.
+- **New: "Rescue lost windows"** (top-level tray menu). If a window ever gets stuck — visible in
+  the taskbar but invisible/unmaximizable when clicked, often after a monitor or docking change —
+  this brings it back onto your primary screen.
+- The same check now runs automatically whenever a window gets minimized during a layout switch,
+  so it can't end up in that stuck state later. Also stopped re-sending "minimize" to a window
+  that's already minimized (harmless in itself, but removed as a precaution).
+
 ## 0.7.0 — 2026-07-01
 
 - **Switching layouts now minimizes everything else.** By default, when you flip to a layout,
