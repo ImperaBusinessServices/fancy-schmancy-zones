@@ -171,6 +171,7 @@ internal sealed class TrayContext : ApplicationContext
     private void RebuildMenu()
     {
         var menu = new ContextMenuStrip();
+        menu.ShowItemToolTips = true;
 
         menu.Items.Add($"Lock current layout…  ({_lockKeyLabel})", null, (_, _) => LockCurrent());
         menu.Items.Add(new ToolStripSeparator());
@@ -186,7 +187,18 @@ internal sealed class TrayContext : ApplicationContext
                 int idx = i;
                 var item = new ToolStripMenuItem(_state.Layouts[i].Name, null, (_, _) => Activate(idx))
                 {
-                    Checked = idx == _currentIndex
+                    Checked = idx == _currentIndex,
+                    ToolTipText = "Left-click: switch to this layout  ·  Right-click: update it to your current windows"
+                };
+                // Right-click a layout name = "Update to current windows" (same as Manage layouts → Update),
+                // so refreshing a layout no longer takes three clicks.
+                item.MouseUp += (_, e) =>
+                {
+                    if (e.Button == MouseButtons.Right)
+                    {
+                        menu.Close();
+                        UpdateLayout(idx);
+                    }
                 };
                 menu.Items.Add(item);
             }

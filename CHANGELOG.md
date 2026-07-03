@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 — 2026-07-03
+
+- **Right-click a layout name to update it — one click instead of three.** "Update to current
+  windows" used to live three levels deep (tray → Manage layouts → the layout → Update). Now you
+  can just right-click the layout's name in the main tray menu to snapshot your current windows
+  into it. Left-click still switches to the layout, exactly as before. (The full Manage layouts
+  submenu is unchanged, so nothing you were used to has moved.)
+
 ## 0.9.1 — 2026-07-03
 
 - **Flipping never uses Windows notifications anymore — at all.** v0.9.0 still popped a toast
