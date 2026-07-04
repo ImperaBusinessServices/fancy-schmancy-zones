@@ -185,25 +185,52 @@ internal sealed class TrayContext : ApplicationContext
             for (int i = 0; i < _state.Layouts.Count; i++)
             {
                 int idx = i;
-                var item = new ToolStripMenuItem(_state.Layouts[i].Name, null, (_, _) => Activate(idx))
+                // A ToolStripMenuItem's Click fires for the RIGHT button too, so wiring Activate to
+                // Click made a right-click BOTH flip AND update — the flip won and the update never
+                // stuck. Fix WITHOUT disturbing the proven left-click path: left-click still flips
+                // via Click exactly as before; a right-click sets a one-shot flag so that same Click
+                // skips the flip, and MouseUp does the update instead. The flag is set fresh on every
+                // press, so it can't get stuck.
+                bool rightClick = false;
+                var item = new ToolStripMenuItem(_state.Layouts[i].Name, null, (_, _) =>
+                {
+                    if (rightClick) { rightClick = false; return; }   // right-click: don't flip
+                    // If a flip / workspace-open is still mid-flight, Activate is a no-op; say so on
+                    // screen instead of leaving the click looking dead.
+                    if (!Activate(idx))
+                        OsdForm.Flash(_state.Layouts[idx].Name, "Busy — finishing the last switch…");
+                })
                 {
                     Checked = idx == _currentIndex,
                     ToolTipText = "Left-click: switch to this layout  ·  Right-click: update it to your current windows"
                 };
-                // Right-click a layout name = "Update to current windows" (same as Manage layouts → Update),
-                // so refreshing a layout no longer takes three clicks. UpdateLayout rebuilds (and
-                // disposes) THIS menu, so we must not run it while the menu is still handling the
-                // click — close the menu, then defer the work onto the next UI-loop turn.
+                item.MouseDown += (_, e) => rightClick = e.Button == MouseButtons.Right;
                 item.MouseUp += (_, e) =>
                 {
                     if (e.Button != MouseButtons.Right) return;
                     LogFlip($"right-click: update \"{_state.Layouts[idx].Name}\" to current windows");
-                    menu.Close();
+                    // UpdateLayout rebuilds (disposes) this menu, so run it after the click unwinds.
                     _sync.BeginInvoke(new Action(() => UpdateLayout(idx)));
                 };
+                // Keyboard Enter fires Click with no preceding MouseDown, so it can't refresh
+                // rightClick. Clear it every time the menu opens so an aborted right-press (released
+                // off the menu, which fires no MouseUp/Click) can never carry a stale 'true' into a
+                // later keyboard flip. Belt-and-suspenders with the per-press MouseDown reset.
+                menu.Opening += (_, _) => rightClick = false;
                 menu.Items.Add(item);
             }
             menu.Items.Add(new ToolStripSeparator());
+
+            // The deliberate "set up my whole workspace" button (e.g. after a reboot): opens the
+            // layout's apps that aren't running, then arranges. Kept SEPARATE from the flip above,
+            // which only ever arranges what's already open. Same layout names, two distinct jobs.
+            var openWorkspace = new ToolStripMenuItem("Open a full workspace");
+            for (int i = 0; i < _state.Layouts.Count; i++)
+            {
+                int idx = i;
+                openWorkspace.DropDownItems.Add(_state.Layouts[i].Name, null, (_, _) => OpenAppsAndArrange(idx));
+            }
+            menu.Items.Add(openWorkspace);
 
             var manage = new ToolStripMenuItem("Manage layouts");
             for (int i = 0; i < _state.Layouts.Count; i++)
@@ -502,12 +529,13 @@ internal sealed class TrayContext : ApplicationContext
     private void OpenAppsAndArrange(int idx)
     {
         if (idx < 0 || idx >= _state.Layouts.Count) return;
-        if (_activating) return;
+        if (_activating) { OsdForm.Flash(_state.Layouts[idx].Name, "Busy — one moment…"); return; }
         _activating = true;
 
         var layout = _state.Layouts[idx];
         _currentIndex = idx;
         RebuildMenu();
+        OsdForm.Flash(layout.Name, "Opening apps…");   // visible feedback (toasts don't show on Keith's PC)
 
         bool matchProfiles = _state.Settings.MatchBrowserProfiles;
         bool minimizeOthers = _state.Settings.MinimizeOtherWindows;
@@ -564,11 +592,13 @@ internal sealed class TrayContext : ApplicationContext
             try
             {
                 int opened = launched, skipped = skippedTerminals;
-                string msg = opened > 0 ? $"Launched {opened} app(s) and arranged the layout."
-                                         : "All apps were already open — arranged the layout.";
+                // Visible on-screen result (not a Windows toast, which doesn't show on Keith's PC).
+                string sub = opened > 0
+                    ? $"Opened ✓  —  launched {opened} app{(opened == 1 ? "" : "s")}, arranged"
+                    : "Arranged ✓  —  apps were already open";
                 if (skipped > 0)
-                    msg += $" Skipped {skipped} terminal window(s) — open those yourself, then flip to snap them into place.";
-                _sync.BeginInvoke((Action)(() => Notify($"Opened \"{layout.Name}\"", msg)));
+                    sub += $"  ·  {skipped} terminal{(skipped == 1 ? "" : "s")} skipped (Settings can turn these on)";
+                _sync.BeginInvoke((Action)(() => OsdForm.Flash(layout.Name, sub)));
             }
             catch { }
         });

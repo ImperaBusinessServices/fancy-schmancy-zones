@@ -82,19 +82,26 @@ internal sealed class OsdForm : Form
     /// under it. Call on the UI thread. With a status line it lingers a bit longer.</summary>
     public static void Flash(string text, string? sub = null)
     {
-        _instance ??= new OsdForm();
-        var f = _instance;
-        f._label.Text = text;
-        f._sub.Text = sub ?? "";
-        f._sub.Visible = sub != null;
-        f.ClientSize = f._flow.PreferredSize;   // the panel's padding gives the box its margins
+        // Must never throw: callers set a "busy" guard (_activating) right before flashing, and an
+        // exception here would leave that guard stuck true and brick all layout switching until
+        // restart. A missing on-screen flash is a cosmetic loss; a stuck guard is not.
+        try
+        {
+            _instance ??= new OsdForm();
+            var f = _instance;
+            f._label.Text = text;
+            f._sub.Text = sub ?? "";
+            f._sub.Visible = sub != null;
+            f.ClientSize = f._flow.PreferredSize;   // the panel's padding gives the box its margins
 
-        var wa = Screen.PrimaryScreen!.WorkingArea;
-        f.Location = new Point(wa.Left + (wa.Width - f.Width) / 2, wa.Top + wa.Height / 4);
+            var wa = Screen.PrimaryScreen!.WorkingArea;
+            f.Location = new Point(wa.Left + (wa.Width - f.Width) / 2, wa.Top + wa.Height / 4);
 
-        if (!f.Visible) f.Show();
-        f._hide.Stop();
-        f._hide.Interval = sub != null ? 2600 : 1100;
-        f._hide.Start();
+            if (!f.Visible) f.Show();
+            f._hide.Stop();
+            f._hide.Interval = sub != null ? 2600 : 1100;
+            f._hide.Start();
+        }
+        catch { }
     }
 }

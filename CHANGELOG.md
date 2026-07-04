@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.6 — 2026-07-03
+
+- **Right-click to update a layout actually sticks now.** The real bug (caught in the log): a menu
+  item's click counts the *right* button too, so right-clicking a layout was firing BOTH "update"
+  and "switch to this layout" at once — and the switch trampled the update, so it never saved.
+  Now a right-click updates only, and a left-click switches only. Left-click behaves exactly as
+  before.
+- **New: "Open a full workspace."** A dedicated menu entry (right under your list of layouts) that
+  lists your layouts; picking one opens that layout's apps that aren't running and arranges them —
+  the deliberate "set up my desk after a reboot" button, kept separate from the everyday flip
+  (which only ever arranges what's already open). Note: it opens apps fresh (not your exact tabs
+  or terminal sessions), and terminals stay off unless you enable them in Settings.
+- **"Open a full workspace" confirms on screen too** ("Opening apps…", then a result line), instead
+  of a Windows notification that doesn't show up on your PC.
+- **No more dead clicks.** While a layout is still opening/arranging (which can take a few seconds),
+  clicking another layout used to do nothing at all. Now it flashes "Busy — one moment…" so you know
+  it heard you. (Hardening from an adversarial review of this change.)
+
 ## 0.9.5 — 2026-07-03
 
 - **Right-clicking a layout to update it now shows an on-screen confirmation.** It was already
