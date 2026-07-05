@@ -288,6 +288,13 @@ internal sealed class TrayContext : ApplicationContext
         matchProfilesItem.Click += (_, _) => ToggleMatchBrowserProfiles();
         settings.DropDownItems.Add(matchProfilesItem);
 
+        var looseBrowserItem = new ToolStripMenuItem("Match browser windows even if the page changed")
+        {
+            Checked = _state.Settings.LooseBrowserMatch
+        };
+        looseBrowserItem.Click += (_, _) => ToggleLooseBrowserMatch();
+        settings.DropDownItems.Add(looseBrowserItem);
+
         var minimizeOthersItem = new ToolStripMenuItem("Minimize other windows when switching layouts")
         {
             Checked = _state.Settings.MinimizeOtherWindows
@@ -342,6 +349,17 @@ internal sealed class TrayContext : ApplicationContext
             _                   => "",
         };
         OsdForm.Flash("Double-tap Ctrl", what);
+    }
+
+    private void ToggleLooseBrowserMatch()
+    {
+        _state.Settings.LooseBrowserMatch = !_state.Settings.LooseBrowserMatch;
+        _state.Save();
+        RebuildMenu();
+        OsdForm.Flash("Browser matching",
+            _state.Settings.LooseBrowserMatch
+                ? "Placing browser windows by profile, even if the page changed"
+                : "Browser windows only match their exact saved page");
     }
 
     private void ToggleMatchBrowserProfiles()
@@ -455,7 +473,9 @@ internal sealed class TrayContext : ApplicationContext
             .Where(w => !WindowManager.IsMinimized(w.Hwnd) && WindowManager.IsOnScreen(w.Bounds))
             .ToList();
 
-        if (matchProfiles) WindowManager.FillProfiles(live);   // note which Chrome/Edge profile each browser window is
+        // Always note each browser window's profile at capture time — the saved profile is what the
+        // loose same-profile browser fallback keys on later, and it's harmless metadata otherwise.
+        WindowManager.FillProfiles(live);
         profileWarning = matchProfiles ? BuildProfileWarning(live) : null;
 
         foreach (var w in live)
@@ -494,7 +514,7 @@ internal sealed class TrayContext : ApplicationContext
         System.Threading.Tasks.Task.Run(() =>
         {
             int restored = 0;
-            try { restored = ShuffleToLayout(layout, _state.Settings.MatchBrowserProfiles, _state.Settings.MinimizeOtherWindows); }
+            try { restored = ShuffleToLayout(layout, _state.Settings.MatchBrowserProfiles, _state.Settings.MinimizeOtherWindows, _state.Settings.LooseBrowserMatch); }
             catch (Exception ex) { Program.LogCrash(ex); }
             finally { _activating = false; }
 
@@ -516,13 +536,15 @@ internal sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>Move/raise each of the layout's windows. Runs on a background thread.</summary>
-    private static int ShuffleToLayout(LockedLayout layout, bool matchProfiles, bool minimizeOthers)
+    private static int ShuffleToLayout(LockedLayout layout, bool matchProfiles, bool minimizeOthers, bool looseBrowser)
     {
         var live = WindowManager.GetAltTabWindows();
-        if (matchProfiles) WindowManager.FillProfiles(live);   // so we place each Chrome window into its own profile's spot
+        // Profiles are needed both for profile-aware placement AND for the loose same-profile
+        // browser fallback, so detect them if either is on.
+        if (matchProfiles || looseBrowser) WindowManager.FillProfiles(live);
         LogFlip($"flip to \"{layout.Name}\" ({layout.Windows.Count} saved, {live.Count} live, minimizeOthers={minimizeOthers})");
         // Pass 1: figure out which live window plays each saved role. No moving yet.
-        var placements = MatchAll(layout, live, matchProfiles);
+        var placements = MatchAll(layout, live, matchProfiles, looseBrowser);
         var used = new HashSet<IntPtr>(placements.Select(p => p.Hwnd));
 
         // Pass 2: minimize everything that's NOT part of this layout — leftovers from another
@@ -588,6 +610,7 @@ internal sealed class TrayContext : ApplicationContext
         bool matchProfiles = _state.Settings.MatchBrowserProfiles;
         bool minimizeOthers = _state.Settings.MinimizeOtherWindows;
         bool launchTerminals = _state.Settings.LaunchTerminalApps;
+        bool looseBrowser = _state.Settings.LooseBrowserMatch;
 
         System.Threading.Tasks.Task.Run(() =>
         {
@@ -595,7 +618,7 @@ internal sealed class TrayContext : ApplicationContext
             try
             {
                 var live = WindowManager.GetAltTabWindows();
-                if (matchProfiles) WindowManager.FillProfiles(live);
+                if (matchProfiles || looseBrowser) WindowManager.FillProfiles(live);
 
                 // Identify an open app by program + browser profile, so a Chrome profile that
                 // isn't open yet still gets launched even though chrome.exe is already running.
@@ -632,7 +655,7 @@ internal sealed class TrayContext : ApplicationContext
                     }
                 }
 
-                ShuffleToLayout(layout, matchProfiles, minimizeOthers);
+                ShuffleToLayout(layout, matchProfiles, minimizeOthers, looseBrowser);
             }
             catch (Exception ex) { Program.LogCrash(ex); }
             finally { _activating = false; }
@@ -661,7 +684,7 @@ internal sealed class TrayContext : ApplicationContext
     /// browser page, a different message) and raised it on top. A saved window that isn't open is
     /// simply left out — the app never substitutes a look-alike.
     /// </summary>
-    private static List<(IntPtr Hwnd, SavedWindow Saved)> MatchAll(LockedLayout layout, List<LiveWindow> live, bool matchProfiles)
+    private static List<(IntPtr Hwnd, SavedWindow Saved)> MatchAll(LockedLayout layout, List<LiveWindow> live, bool matchProfiles, bool looseBrowser)
     {
         var saved = layout.Windows;
         var match = new IntPtr[saved.Count];
@@ -686,12 +709,19 @@ internal sealed class TrayContext : ApplicationContext
                 Math.Min(s.Title.Length, w.Title.Length) >= 5 &&
                 (w.Title.Contains(s.Title, StringComparison.OrdinalIgnoreCase) ||
                  s.Title.Contains(w.Title, StringComparison.OrdinalIgnoreCase))),
-            // NOTE: there used to be a "same app" last-resort tier — if a saved window was gone,
-            // grab any other window of that app. In the ENTIRE flip.log it never once produced a
-            // correct match; all 10 times it fired it grabbed the wrong browser page and raised it
-            // on top. So it's gone. The app now only ever places the exact windows you saved
-            // (by handle or by title) and leaves the rest out — it can never substitute a
-            // look-alike. If a saved window is closed, its slot is simply skipped.
+            // Loose browser fallback (opt-out via Settings): a Chrome/Edge window of the SAME PROFILE,
+            // regardless of which tab/page it's showing now. Runs LAST, so a window still on its saved
+            // page always claims its own slot first; only leftover same-profile browser windows fill
+            // leftover browser slots. This is what places your browser windows when you've switched
+            // tabs since locking (their title changed) — same-profile windows are interchangeable and
+            // can't be told apart any other way. Never crosses profiles, never grabs a minimized
+            // window, and is count-bounded (only as many windows as there are slots). This deliberately
+            // does NOT apply to any non-browser app (a generic "same app" grab was wrong every time).
+            ("same-profile browser", (s, w) => looseBrowser &&
+                w.Process == s.Process && WindowManager.IsChromium(s.Process) &&
+                !WindowManager.IsMinimized(w.Hwnd) &&
+                !string.IsNullOrEmpty(s.Profile) && !string.IsNullOrEmpty(w.Profile) &&
+                string.Equals(s.Profile, w.Profile, StringComparison.OrdinalIgnoreCase)),
         };
 
         foreach (var (how, fits) in tiers)
@@ -776,20 +806,34 @@ internal sealed class TrayContext : ApplicationContext
         }
         _settle.Stop();   // cancel any pending cycle so nothing flips windows behind the picker
 
-        // Build each card's preview from the windows that are actually open right now (what a flip
-        // would place), so closed windows don't show up on the card.
-        var live = WindowManager.GetAltTabWindows();
-        var cards = _state.Layouts
-            .Select(layout => new LayoutPickerForm.CardInfo(
-                layout.Name,
-                MatchAll(layout, live, false).Select(p => p.Saved.Bounds).ToList()))
-            .ToList();
+        bool matchProfiles = _state.Settings.MatchBrowserProfiles;
+        bool looseBrowser = _state.Settings.LooseBrowserMatch;
+        var layouts = _state.Layouts;
+        int currentIndex = _currentIndex;
 
-        LayoutPickerForm.Show(cards, _currentIndex, idx =>
+        // Work out each card's OPEN windows OFF the UI thread — FillProfiles walks Chrome's
+        // accessibility tree per browser window and can take a moment; on the UI thread that would
+        // freeze the tray/OSD before the picker even appears. Then show the picker on the UI thread.
+        // (Each card previews only the windows a flip would actually place.)
+        System.Threading.Tasks.Task.Run(() =>
         {
+            List<LayoutPickerForm.CardInfo> cards;
+            try
+            {
+                var live = WindowManager.GetAltTabWindows();
+                if (matchProfiles || looseBrowser) WindowManager.FillProfiles(live);
+                cards = layouts.Select(layout => new LayoutPickerForm.CardInfo(
+                    layout.Name,
+                    MatchAll(layout, live, matchProfiles, looseBrowser).Select(p => p.Saved.Bounds).ToList())).ToList();
+            }
+            catch (Exception ex) { Program.LogCrash(ex); return; }
+
             // Apply immediately if we can; if a previous switch is still finishing (_activating),
             // queue via the settle timer's retry so the pick is never silently dropped.
-            if (!Activate(idx)) RequestFlip(idx);
+            _sync.BeginInvoke((Action)(() => LayoutPickerForm.Show(cards, currentIndex, idx =>
+            {
+                if (!Activate(idx)) RequestFlip(idx);
+            })));
         });
     }
 

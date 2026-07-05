@@ -65,6 +65,13 @@ public sealed class AppSettings
 
     // What a double-tap of Ctrl does. Defaults to showing the on-screen card picker.
     public FlipMode DoubleTapCtrl { get; set; } = FlipMode.PickCards;
+
+    // When on, a layout's Chrome/Edge window that can't be found by its exact page is filled with
+    // any other open window of the SAME browser profile. Browser windows change title as you switch
+    // tabs and same-profile windows can't be told apart, so this places your browser windows even
+    // when the page has changed since you locked the layout. Off = browser windows only ever match
+    // by their exact page (safer, but a re-tabbed window won't be placed).
+    public bool LooseBrowserMatch { get; set; } = true;
 }
 
 /// <summary>Everything we persist between runs.</summary>
