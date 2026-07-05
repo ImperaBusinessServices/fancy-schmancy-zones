@@ -3,7 +3,7 @@
 ; and Desktop shortcuts, with an optional "start at sign-in" choice.
 
 #define AppName "Fancy Schmancy Zones"
-#define AppVersion "0.3.3"
+#define AppVersion "0.10.1"
 #define AppPublisher "Keith Blanco"
 #define AppExeName "FancySchmancyZones.exe"
 #define AppId "{{B6F1B3A2-7C4E-4E2A-9C1D-9F3E5A0C2D11}"
@@ -19,7 +19,8 @@ DisableProgramGroupPage=yes
 DisableDirPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=FancySchmancyZones-Setup-{#AppVersion}
+; Stable filename (no version) so the website's "latest" download link never has to change.
+OutputBaseFilename=FancySchmancyZones-Setup
 SetupIconFile=..\src\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2/max
