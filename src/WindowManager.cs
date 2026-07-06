@@ -133,6 +133,34 @@ public static class WindowManager
         Screen.AllScreens.Any(s => s.Bounds.IntersectsWith(new Rectangle(b.X, b.Y, b.W, b.H)));
 
     /// <summary>
+    /// From a Z-ORDERED (front-first) list of windows, keep only the ones you can actually SEE —
+    /// i.e. drop any window that's COMPLETELY hidden behind the windows in front of it. A window
+    /// peeking out even a sliver is kept (you can see it, so you meant it to be in the arrangement).
+    /// This is what makes "Lock" save the layout that's visible on screen, rather than every window
+    /// that merely happens to be open behind something. Walks front→back, accumulating the covered
+    /// area; a window survives if any part of it is still uncovered when its turn comes.
+    /// </summary>
+    public static List<LiveWindow> VisibleOnly(IReadOnlyList<LiveWindow> frontToBack)
+    {
+        var kept = new List<LiveWindow>();
+        using var identity = new System.Drawing.Drawing2D.Matrix();
+        using var covered = new Region();
+        covered.MakeEmpty();   // a fresh Region is INFINITE; start from nothing covered
+        foreach (var w in frontToBack)
+        {
+            var r = new Rectangle(w.Bounds.X, w.Bounds.Y, w.Bounds.W, w.Bounds.H);
+            using (var visible = new Region(r))
+            {
+                visible.Exclude(covered);                           // the part of w not hidden by windows in front
+                if (visible.GetRegionScans(identity).Length > 0)    // any pixels left ⇒ at least partly visible
+                    kept.Add(w);
+            }
+            covered.Union(r);                                       // w now hides whatever's behind it
+        }
+        return kept;
+    }
+
+    /// <summary>
     /// Minimize every window in the list, then verify — a busy window (e.g. a terminal mid-output)
     /// can occasionally miss the first "please minimize" message, since we deliberately never block
     /// waiting on another app. Retries a few times; anything still refusing (custom minimize

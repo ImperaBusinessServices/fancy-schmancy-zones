@@ -472,6 +472,10 @@ internal sealed class TrayContext : ApplicationContext
         var live = WindowManager.GetAltTabWindows()
             .Where(w => !WindowManager.IsMinimized(w.Hwnd) && WindowManager.IsOnScreen(w.Bounds))
             .ToList();
+        // Only save what you can actually SEE — skip windows completely buried behind others (a
+        // window peeking out even a little is kept). Keeps incidental windows sitting hidden behind
+        // the arrangement from being scooped into the layout. GetAltTabWindows is front-first.
+        live = WindowManager.VisibleOnly(live);
 
         // Always note each browser window's profile at capture time — the saved profile is what the
         // loose same-profile browser fallback keys on later, and it's harmless metadata otherwise.
