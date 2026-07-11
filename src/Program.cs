@@ -183,6 +183,16 @@ internal sealed class TrayContext : ApplicationContext
         menu.ShowItemToolTips = true;
 
         menu.Items.Add($"Lock current layout…  ({_lockKeyLabel})", null, (_, _) => LockCurrent());
+
+        // "Arrange windows" (the Window Cascade features, merged in 2026-07-11). Arranging is
+        // deliberately TRANSIENT — it never creates or updates a layout. Arrange, curate by
+        // hand, then Lock/Update explicitly. Populated fresh each time it's opened, so the
+        // app list always reflects what's open right now.
+        var arrangeRoot = new ToolStripMenuItem("Arrange windows");
+        arrangeRoot.DropDownItems.Add(new ToolStripMenuItem("(looking at your windows…)") { Enabled = false });
+        arrangeRoot.DropDownOpening += (_, _) => PopulateArrangeMenu(arrangeRoot);
+        menu.Items.Add(arrangeRoot);
+
         menu.Items.Add(new ToolStripSeparator());
 
         if (_state.Layouts.Count == 0)
@@ -600,6 +610,158 @@ internal sealed class TrayContext : ApplicationContext
         catch { }
     }
 
+    // ---- Arrange windows (merged from Window Cascade, 2026-07-11) ----
+
+    /// <summary>Rebuild the "Arrange windows" submenu from what's open RIGHT NOW: All windows,
+    /// then every app with 2+ windows, then Undo. Runs on the UI thread when the submenu opens
+    /// (plain enumeration only — no browser-profile walking — so it's instant).</summary>
+    private void PopulateArrangeMenu(ToolStripMenuItem root)
+    {
+        root.DropDownItems.Clear();
+
+        List<LiveWindow> all;
+        try { all = WindowManager.GetAltTabWindows(); } catch { all = new List<LiveWindow>(); }
+
+        ToolStripMenuItem WithShapes(string label, string? process, int count)
+        {
+            var item = new ToolStripMenuItem($"{label}  ({count} window{(count == 1 ? "" : "s")})");
+            item.DropDownItems.Add("Grid", null, (_, _) => StartArrange(process, Arrange.Shape.Grid));
+            item.DropDownItems.Add("Side by side", null, (_, _) => StartArrange(process, Arrange.Shape.SideBySide));
+            item.DropDownItems.Add("Stacked", null, (_, _) => StartArrange(process, Arrange.Shape.Stacked));
+            item.DropDownItems.Add("Cascade", null, (_, _) => StartArrange(process, Arrange.Shape.Cascade));
+            return item;
+        }
+
+        root.DropDownItems.Add(WithShapes("All windows", null, all.Count));
+        root.DropDownItems.Add(new ToolStripSeparator());
+
+        var groups = all.Where(w => w.Process.Length > 0)
+            .GroupBy(w => w.Process, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() >= 2)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (groups.Count == 0)
+        {
+            root.DropDownItems.Add(new ToolStripMenuItem("(no app has 2+ windows open)") { Enabled = false });
+        }
+        else
+        {
+            foreach (var g in groups)
+                root.DropDownItems.Add(WithShapes(FriendlyAppName(g.First()), g.Key, g.Count()));
+        }
+
+        root.DropDownItems.Add(new ToolStripSeparator());
+        var undo = new ToolStripMenuItem("Undo last arrange") { Enabled = Arrange.HasUndo };
+        undo.Click += (_, _) => StartUndoArrange();
+        root.DropDownItems.Add(undo);
+    }
+
+    /// <summary>"Windows Terminal" instead of "WindowsTerminal", "Google Chrome" instead of
+    /// "chrome" — read from the exe's own description, falling back to the process name.</summary>
+    private static string FriendlyAppName(LiveWindow w)
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(w.ExePath))
+            {
+                var d = System.Diagnostics.FileVersionInfo.GetVersionInfo(w.ExePath).FileDescription;
+                if (!string.IsNullOrWhiteSpace(d)) return d;
+            }
+        }
+        catch { }
+        return w.Process;
+    }
+
+    /// <summary>
+    /// Arrange one app's windows (or all windows) in the chosen shape. Per Keith's rule,
+    /// arranging an APP means "show me just that app": everything else is minimized out of the
+    /// way first (Undo puts it all back). "All windows" arranges everything, each window staying
+    /// on its own monitor; a single app's windows spread across all monitors.
+    /// </summary>
+    private void StartArrange(string? process, Arrange.Shape shape)
+    {
+        if (_activating) { OsdForm.Flash("Arrange windows", "Busy — finishing the last switch…"); return; }
+        _settle.Stop();      // a queued flip firing after us would stomp the fresh arrangement
+        _activating = true;
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            int n = 0;
+            string label = "windows";
+            try
+            {
+                var all = WindowManager.GetAltTabWindows();
+                var group = process == null
+                    ? all
+                    : all.Where(w => w.Process.Equals(process, StringComparison.OrdinalIgnoreCase)).ToList();
+                n = group.Count;
+
+                if (n > 0)
+                {
+                    if (process != null) label = FriendlyAppName(group[0]) + " windows";
+
+                    // One-level undo covers everything this arrange touches: the windows being
+                    // arranged AND the ones minimized out of the way.
+                    Arrange.SnapshotForUndo(
+                        (process == null ? group : all).Select(w => w.Hwnd));
+
+                    if (process != null)
+                    {
+                        var keep = new HashSet<IntPtr>(group.Select(w => w.Hwnd));
+                        WindowManager.MinimizeAll(all.Where(w => !keep.Contains(w.Hwnd)).Select(w => w.Hwnd));
+                    }
+
+                    LogFlip($"arrange: {shape} \"{process ?? "ALL"}\" — {n} window(s)" +
+                            (process != null ? $", minimizing {all.Count - n} other(s)" : ""));
+                    Arrange.Do(shape, group, spreadAcrossMonitors: process != null);
+                }
+            }
+            catch (Exception ex) { Program.LogCrash(ex); }
+            finally { _activating = false; }
+
+            try
+            {
+                int count = n; string what = label;
+                _sync.BeginInvoke((Action)(() => OsdForm.Flash("Arrange windows",
+                    count == 0
+                        ? "Nothing to arrange — those windows aren't open anymore"
+                        : $"Arranged {count} {what} ✓  —  Undo is in the tray menu")));
+            }
+            catch { }
+        });
+    }
+
+    /// <summary>Put every window back where it was before the last arrange (position and
+    /// minimized/maximized state), then forget the snapshot.</summary>
+    private void StartUndoArrange()
+    {
+        if (_activating) { OsdForm.Flash("Undo arrange", "Busy — one moment…"); return; }
+        _settle.Stop();
+        _activating = true;
+
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            int n = 0;
+            try
+            {
+                n = Arrange.UndoLast();
+                LogFlip($"arrange: undo — restored {n} window(s)");
+            }
+            catch (Exception ex) { Program.LogCrash(ex); }
+            finally { _activating = false; }
+
+            try
+            {
+                int count = n;
+                _sync.BeginInvoke((Action)(() => OsdForm.Flash("Undo arrange",
+                    count > 0 ? $"Put {count} window{(count == 1 ? "" : "s")} back ✓" : "Nothing to undo")));
+            }
+            catch { }
+        });
+    }
+
     /// <summary>
     /// Launch any of the layout's apps that aren't currently open, wait for their
     /// windows to appear, then arrange everything into the saved layout.
@@ -916,6 +1078,12 @@ internal sealed class TrayContext : ApplicationContext
             "Flip quickly several times to skim — the layout name pops up on screen as you go, " +
             "and the windows arrange once you stop.\n" +
             "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
+            "ARRANGE WINDOWS:\n" +
+            "\"Arrange windows\" (in the tray menu) tidies what's open right now: pick an app " +
+            "(or All windows) and a shape — Grid, Side by side, Stacked, or Cascade. Arranging " +
+            "an app minimizes everything else so you see just that app; \"Undo last arrange\" " +
+            "puts it all back. Arranging is temporary — it doesn't change any layout. Like the " +
+            "look? Lock it as a layout (or right-click a layout name to update one).\n\n" +
             "REOPENING APPS:\n" +
             "\"Open apps + arrange\" (under Manage layouts) launches any apps in that layout that " +
             "aren't already running, then arranges everything — handy after a reboot.\n\n" +
