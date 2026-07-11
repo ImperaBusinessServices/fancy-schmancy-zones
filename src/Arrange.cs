@@ -133,6 +133,20 @@ public static class Arrange
             }
         }
 
+        // Second pass: when a window lands on a monitor with DIFFERENT display scaling, Windows
+        // rescales it right after our move (WM_DPICHANGED), mangling the size we just set —
+        // verified live: spread-to-monitor-2 windows kept their old size. Re-applying the same
+        // rect once the window is already ON its target monitor sticks, because no DPI change
+        // fires the second time. (Same double-apply trick PowerToys FancyZones uses. Insets are
+        // re-measured fresh in MoveFlush — the frame thickness differs per DPI too.)
+        System.Threading.Thread.Sleep(350);
+        foreach (var (mon, wins) in chunks)
+        {
+            var rects = Compute(shape, mon.WorkingArea, wins.Count);
+            for (int i = 0; i < wins.Count; i++)
+                MoveFlush(wins[i].Hwnd, rects[i]);
+        }
+
         // Raise back-to-front so the window that was frontmost when the menu was opened ends up
         // on top — same deterministic-stacking rule the flip uses (v0.10.4).
         for (int i = group.Count - 1; i >= 0; i--) WindowManager.RaiseToTop(group[i].Hwnd);
