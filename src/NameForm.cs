@@ -18,6 +18,14 @@ public sealed class NameForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
+
+        // Every Left/Top/Width below is hand-picked for a 96 DPI (100% scaling) screen. Without
+        // this, Windows renders the dialog's font bigger on a scaled-up monitor (125%/150%/200%)
+        // but leaves these raw pixel positions untouched, so the prompt text, box, and buttons
+        // overlap. AutoScaleMode.Dpi tells WinForms to scale the whole form — size, control
+        // positions, and font — together to match whatever monitor it opens on.
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
         ClientSize = new Size(360, 120);
 
         var label = new Label { Text = prompt, Left = 14, Top = 14, Width = 332, AutoSize = false, Height = 20 };
