@@ -19,23 +19,57 @@ public sealed class NameForm : Form
         MaximizeBox = false;
         ShowInTaskbar = false;
 
-        // Every Left/Top/Width below is hand-picked for a 96 DPI (100% scaling) screen. Without
-        // this, Windows renders the dialog's font bigger on a scaled-up monitor (125%/150%/200%)
-        // but leaves these raw pixel positions untouched, so the prompt text, box, and buttons
-        // overlap. AutoScaleMode.Dpi tells WinForms to scale the whole form — size, control
-        // positions, and font — together to match whatever monitor it opens on.
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96f, 96f);
-        ClientSize = new Size(360, 120);
+        // Nothing here is placed by hand. Every earlier version pinned each Left/Top/Width/Height to
+        // pixels measured on a 100% monitor, so on a scaled-up screen the font grew but those numbers
+        // didn't: the prompt overlapped the box and the Save/Cancel buttons fell off the bottom edge.
+        // Telling the panel to measure the real controls and the form to size itself around them means
+        // it cannot clip -- at any scaling, in any font, in any language.
+        AutoScaleMode = AutoScaleMode.Font;
+        AutoScaleDimensions = new SizeF(7f, 15f);   // Segoe UI 9pt at 100% -- the baseline this was drawn at
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-        var label = new Label { Text = prompt, Left = 14, Top = 14, Width = 332, AutoSize = false, Height = 20 };
-        _box = new TextBox { Left = 14, Top = 40, Width = 332, Text = initial };
+        var label = new Label { Text = prompt, AutoSize = true, Margin = new Padding(0, 0, 0, 7) };
+        _box = new TextBox
+        {
+            Text = initial,
+            Width = 340,
+            // A name has to stay readable on a picker card; the card shrinks long ones to fit, but
+            // there's no size at which a paragraph is a label. Generous enough never to bite a real
+            // name (Keith's longest is 36).
+            MaxLength = 60,
+            Margin = new Padding(0, 0, 0, 14),
+        };
         _box.SelectAll();
 
-        var ok = new Button { Text = "Save", DialogResult = DialogResult.OK, Left = 186, Top = 78, Width = 75 };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 271, Top = 78, Width = 75 };
+        var ok = new Button { Text = "Save", DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(84, 0), Margin = new Padding(7, 0, 0, 0) };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(84, 0), Margin = new Padding(7, 0, 0, 0) };
 
-        Controls.AddRange(new Control[] { label, _box, ok, cancel });
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Right,
+            Margin = new Padding(0),
+        };
+        buttons.Controls.Add(cancel);
+        buttons.Controls.Add(ok);
+
+        var layout = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(14),
+            Location = new Point(0, 0),
+        };
+        layout.Controls.Add(label);
+        layout.Controls.Add(_box);
+        layout.Controls.Add(buttons);
+
+        Controls.Add(layout);
         AcceptButton = ok;
         CancelButton = cancel;
     }
