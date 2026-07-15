@@ -42,7 +42,17 @@ Source: "..\src\bin\Release\net8.0-windows\win-x64\publish\{#AppExeName}"; DestD
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: startup
+
+; Start at sign-in is a Run entry, the same one Settings -> "Start with Windows" writes, so the
+; app's checkmark always matches what the installer did. Older builds used a Startup-folder
+; shortcut; InstallDelete clears it so an upgrade can't end up launching us twice.
+[InstallDelete]
+Type: files; Name: "{userstartup}\{#AppName}.lnk"
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExeName}"""; Flags: uninsdeletevalue; Tasks: startup
+; Belt and braces: drop the entry at uninstall even if it was switched on from inside the app.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#AppName}"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent

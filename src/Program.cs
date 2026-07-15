@@ -277,6 +277,15 @@ internal sealed class TrayContext : ApplicationContext
 
         var settings = new ToolStripMenuItem("Settings");
 
+        // Checked from the registry, not from our settings file — see Startup.cs.
+        var startWithWindowsItem = new ToolStripMenuItem("Start with Windows")
+        {
+            Checked = Startup.IsEnabled()
+        };
+        startWithWindowsItem.Click += (_, _) => ToggleStartWithWindows();
+        settings.DropDownItems.Add(startWithWindowsItem);
+        settings.DropDownItems.Add(new ToolStripSeparator());
+
         // Triple toggle: what a double-tap of Ctrl does. Radio-style — one checked at a time.
         var flipMode = new ToolStripMenuItem("When I double-tap Ctrl…");
         void AddFlipMode(string label, FlipMode mode)
@@ -359,6 +368,26 @@ internal sealed class TrayContext : ApplicationContext
             _                   => "",
         };
         OsdForm.Flash("Double-tap Ctrl", what);
+    }
+
+    private void ToggleStartWithWindows()
+    {
+        bool wanted = !Startup.IsEnabled();
+        bool actual = Startup.SetEnabled(wanted);
+        RebuildMenu();
+
+        if (actual != wanted)
+        {
+            Notify("Couldn't change that",
+                "Windows wouldn't let me update your startup apps. You can set it yourself in " +
+                "Task Manager → Startup apps.");
+            return;
+        }
+
+        Notify("Setting changed",
+            actual
+                ? "Fancy Schmancy Zones will start on its own when you sign in to Windows."
+                : "Fancy Schmancy Zones won't start on its own — open it when you want it.");
     }
 
     private void ToggleLooseBrowserMatch()
@@ -1088,6 +1117,10 @@ internal sealed class TrayContext : ApplicationContext
             "an app minimizes everything else so you see just that app; \"Undo last arrange\" " +
             "puts it all back. Arranging is temporary — it doesn't change any layout. Like the " +
             "look? Lock it as a layout (or right-click a layout name to update one).\n\n" +
+            "STARTING UP:\n" +
+            "Settings → \"Start with Windows\" puts the tray icon (and the hotkeys) back on their " +
+            "own every time you sign in. It doesn't reopen your apps — use \"Open apps + arrange\" " +
+            "for that.\n\n" +
             "REOPENING APPS:\n" +
             "\"Open apps + arrange\" (under Manage layouts) launches any apps in that layout that " +
             "aren't already running, then arranges everything — handy after a reboot.\n\n" +
