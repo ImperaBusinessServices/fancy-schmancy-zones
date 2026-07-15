@@ -219,17 +219,41 @@ internal sealed class LayoutPickerForm : Form
             using (var pen = new Pen(borderColor, _hover || _isCurrent ? 2f : 1f))
                 g.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
 
-            using (var titleFont = new Font("Segoe UI", 12f, FontStyle.Bold))
+            // Everything below is drawn against the original 300x210 design and multiplied by k to
+            // land on the card's REAL pixel size. Fonts are sized in PIXELS (16px == the old 12pt at
+            // 100%) for the same reason: a point-sized font grows on a scaled-up monitor while a
+            // hardcoded rectangle doesn't, which is how a name box 42px tall ended up shorter than
+            // one 42.6px line of its own text on Keith's 200% screen — and drew nothing at all.
+            float k = Height / 210f;
+            var nameRect = new RectangleF(12 * k, 9 * k, Width - 46 * k, 42 * k);
+
+            using (var titleFont = FitName(g, _name, nameRect, k))
             using (var titleBrush = new SolidBrush(Color.White))
-            using (var sf = new StringFormat(StringFormatFlags.LineLimit) { Trimming = StringTrimming.EllipsisWord })
-                g.DrawString(_name, titleFont, titleBrush, new RectangleF(12, 9, Width - 46, 42), sf);
+            using (var sf = new StringFormat { Trimming = StringTrimming.EllipsisCharacter })
+                g.DrawString(_name, titleFont, titleBrush, nameRect, sf);
 
             if (_number is >= 1 and <= 9)
-                using (var numFont = new Font("Segoe UI", 11.5f, FontStyle.Bold))
+                using (var numFont = new Font("Segoe UI", 15.3f * k, FontStyle.Bold, GraphicsUnit.Pixel))
                 using (var numBrush = new SolidBrush(Color.FromArgb(150, 150, 162)))
-                    g.DrawString(_number.ToString(), numFont, numBrush, Width - 28, 9);
+                    g.DrawString(_number.ToString(), numFont, numBrush, Width - 28 * k, 9 * k);
 
-            DrawMiniMap(g, new Rectangle(14, 56, Width - 28, Height - 70), _openWindows);
+            DrawMiniMap(g, Rectangle.Round(new RectangleF(14 * k, 56 * k, Width - 28 * k, Height - 70 * k)), _openWindows);
+        }
+
+        /// <summary>The biggest size the whole name fits at: full size for short names (unchanged
+        /// from before), stepped down and allowed to wrap for long ones. A name Keith actually
+        /// typed — "188-Salon Site Migra and Retargeting" — should be readable on its card, not
+        /// trimmed away, so shrinking beats truncating. Only a name too long even at the smallest
+        /// size falls through to the caller's ellipsis.</summary>
+        private static Font FitName(Graphics g, string name, RectangleF box, float k)
+        {
+            foreach (float px in new[] { 16f, 14.5f, 13f, 11.5f, 10f })
+            {
+                var f = new Font("Segoe UI", px * k, FontStyle.Bold, GraphicsUnit.Pixel);
+                if (g.MeasureString(name, f, (int)box.Width).Height <= box.Height) return f;
+                f.Dispose();
+            }
+            return new Font("Segoe UI", 10f * k, FontStyle.Bold, GraphicsUnit.Pixel);
         }
 
         /// <summary>Draw a little map of the whole (multi-monitor) desktop: each connected monitor
@@ -264,7 +288,8 @@ internal sealed class LayoutPickerForm : Form
 
             if (openWindows.Count == 0)
             {
-                using var f = new Font("Segoe UI", 9f, FontStyle.Italic);
+                // 12px == the old 9pt at 100%; sized off the map so it tracks the card. See OnPaint.
+                using var f = new Font("Segoe UI", 12f * (area.Height / 140f), FontStyle.Italic, GraphicsUnit.Pixel);
                 using var b = new SolidBrush(Color.FromArgb(140, 140, 150));
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Far };
                 g.DrawString("none of its windows are open", f, b, area, sf);
