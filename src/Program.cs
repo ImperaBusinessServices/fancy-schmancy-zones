@@ -642,8 +642,9 @@ internal sealed class TrayContext : ApplicationContext
     // ---- Arrange windows (merged from Window Cascade, 2026-07-11) ----
 
     /// <summary>Rebuild the "Arrange windows" submenu from what's open RIGHT NOW: All windows,
-    /// then every app with 2+ windows, then Undo. Runs on the UI thread when the submenu opens
-    /// (plain enumeration only — no browser-profile walking — so it's instant).</summary>
+    /// then every app with 2+ windows, then Undo. A browser gets a level of its own listing each
+    /// open profile. Runs on the UI thread when the submenu opens; the profile read is a shell
+    /// property lookup (~0.2ms/window), so it stays instant.</summary>
     private void PopulateArrangeMenu(ToolStripMenuItem root)
     {
         root.DropDownItems.Clear();
@@ -651,17 +652,20 @@ internal sealed class TrayContext : ApplicationContext
         List<LiveWindow> all;
         try { all = WindowManager.GetAltTabWindows(); } catch { all = new List<LiveWindow>(); }
 
-        ToolStripMenuItem WithShapes(string label, string? process, int count)
+        ToolStripMenuItem WithShapes(string label, int count, Func<Arrange.Shape, Action> run)
         {
             var item = new ToolStripMenuItem($"{label}  ({count} window{(count == 1 ? "" : "s")})");
-            item.DropDownItems.Add("Grid", null, (_, _) => StartArrange(process, Arrange.Shape.Grid));
-            item.DropDownItems.Add("Side by side", null, (_, _) => StartArrange(process, Arrange.Shape.SideBySide));
-            item.DropDownItems.Add("Stacked", null, (_, _) => StartArrange(process, Arrange.Shape.Stacked));
-            item.DropDownItems.Add("Cascade", null, (_, _) => StartArrange(process, Arrange.Shape.Cascade));
+            item.DropDownItems.Add("Grid", null, (_, _) => run(Arrange.Shape.Grid)());
+            item.DropDownItems.Add("Side by side", null, (_, _) => run(Arrange.Shape.SideBySide)());
+            item.DropDownItems.Add("Stacked", null, (_, _) => run(Arrange.Shape.Stacked)());
+            item.DropDownItems.Add("Cascade", null, (_, _) => run(Arrange.Shape.Cascade)());
             return item;
         }
 
-        root.DropDownItems.Add(WithShapes("All windows", null, all.Count));
+        ToolStripMenuItem AppItem(string label, string? process, int count) =>
+            WithShapes(label, count, shape => () => StartArrange(process, shape));
+
+        root.DropDownItems.Add(AppItem("All windows", null, all.Count));
         root.DropDownItems.Add(new ToolStripSeparator());
 
         var groups = all.Where(w => w.Process.Length > 0)
@@ -678,13 +682,69 @@ internal sealed class TrayContext : ApplicationContext
         else
         {
             foreach (var g in groups)
-                root.DropDownItems.Add(WithShapes(FriendlyAppName(g.First()), g.Key, g.Count()));
+            {
+                string appLabel = FriendlyAppName(g.First());
+                var profiles = WindowManager.IsChromium(g.Key) ? ProfileGroups(g.ToList(), g.Key) : null;
+
+                // One profile open (or none we can tell apart) means the app entry already covers
+                // every window — a lone profile entry underneath would just be the same thing twice.
+                if (profiles is not { Count: >= 2 })
+                {
+                    root.DropDownItems.Add(AppItem(appLabel, g.Key, g.Count()));
+                    continue;
+                }
+
+                var appRoot = new ToolStripMenuItem($"{appLabel}  ({g.Count()} windows)");
+                appRoot.DropDownItems.Add(AppItem($"All {appLabel} windows", g.Key, g.Count()));
+                appRoot.DropDownItems.Add(new ToolStripSeparator());
+                foreach (var p in profiles)
+                {
+                    string key = p.Key;
+                    appRoot.DropDownItems.Add(WithShapes(p.Label, p.Windows.Count,
+                        shape => () => StartArrange(g.Key, shape, key)));
+                }
+                root.DropDownItems.Add(appRoot);
+            }
         }
 
         root.DropDownItems.Add(new ToolStripSeparator());
         var undo = new ToolStripMenuItem("Undo last arrange") { Enabled = Arrange.HasUndo };
         undo.Click += (_, _) => StartUndoArrange();
         root.DropDownItems.Add(undo);
+    }
+
+    /// <summary>One browser profile with windows open right now.</summary>
+    private sealed record ProfileGroup(string Key, string Label, List<LiveWindow> Windows);
+
+    /// <summary>
+    /// Split a browser's open windows by profile — the Window Cascade feature Keith asked for:
+    /// pick Chrome, see each login, arrange just that one's windows.
+    ///
+    /// Grouped by the window's AppUserModelID, which is exactly how Windows groups them in the
+    /// taskbar, so what's listed here matches what he already sees down there. Windows we can't
+    /// name a profile for (a second Chrome instance running its own user-data folder, say) still
+    /// group correctly under their own tag — they just get a generic label rather than a guess.
+    /// </summary>
+    private static List<ProfileGroup> ProfileGroups(List<LiveWindow> windows, string process)
+    {
+        var named = new List<ProfileGroup>();
+        var unnamed = new List<ProfileGroup>();
+        try
+        {
+            foreach (var g in windows.GroupBy(w => BrowserProfiles.ProfileOf(w.Hwnd, process)))
+            {
+                if (g.Key.Key.Length == 0) continue;   // no tag at all — nothing to group on
+                var list = g.ToList();
+                if (g.Key.Name.Length > 0) named.Add(new ProfileGroup(g.Key.Key, g.Key.Name, list));
+                else unnamed.Add(new ProfileGroup(g.Key.Key, "Other windows", list));
+            }
+        }
+        catch (Exception ex) { Program.LogCrash(ex); return new List<ProfileGroup>(); }
+
+        // Biggest first, like the app list above it; the unnamed stragglers sink to the bottom.
+        return named.OrderByDescending(p => p.Windows.Count).ThenBy(p => p.Label, StringComparer.OrdinalIgnoreCase)
+            .Concat(unnamed.OrderByDescending(p => p.Windows.Count))
+            .ToList();
     }
 
     /// <summary>"Windows Terminal" instead of "WindowsTerminal", "Google Chrome" instead of
@@ -704,12 +764,17 @@ internal sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>
-    /// Arrange one app's windows (or all windows) in the chosen shape. Per Keith's rule,
-    /// arranging an APP means "show me just that app": everything else is minimized out of the
-    /// way first (Undo puts it all back). "All windows" arranges everything, each window staying
-    /// on its own monitor; a single app's windows spread across all monitors.
+    /// Arrange one app's windows (or one browser profile's, or all windows) in the chosen shape.
+    /// Per Keith's rule, arranging an APP means "show me just that app": everything else is
+    /// minimized out of the way first (Undo puts it all back). Arranging a PROFILE means the same,
+    /// one level finer — the browser's other logins get minimized too, so you're left with just
+    /// that profile's windows. "All windows" arranges everything, each window staying on its own
+    /// monitor; a single app or profile spreads across all monitors.
     /// </summary>
-    private void StartArrange(string? process, Arrange.Shape shape)
+    /// <param name="profileKey">A browser profile's group key from ProfileGroups, or null for the
+    /// whole app. Re-resolved here rather than trusted from the menu: windows come and go between
+    /// opening a menu and clicking it.</param>
+    private void StartArrange(string? process, Arrange.Shape shape, string? profileKey = null)
     {
         if (_activating) { OsdForm.Flash("Arrange windows", "Busy — finishing the last switch…"); return; }
         _settle.Stop();      // a queued flip firing after us would stomp the fresh arrangement
@@ -725,11 +790,30 @@ internal sealed class TrayContext : ApplicationContext
                 var group = process == null
                     ? all
                     : all.Where(w => w.Process.Equals(process, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                if (profileKey != null && process != null)
+                {
+                    group = group.Where(w => BrowserProfiles.ProfileOf(w.Hwnd, process).Key == profileKey).ToList();
+                    if (group.Count == 0)
+                    {
+                        // Every window of that profile has closed since the menu was drawn. Say so
+                        // instead of falling back to the whole browser and shuffling the wrong ones.
+                        _activating = false;
+                        _sync.BeginInvoke((Action)(() => OsdForm.Flash("Arrange windows",
+                            "Nothing to arrange — that profile's windows aren't open anymore")));
+                        return;
+                    }
+                }
                 found = group.Count;
 
                 if (found > 0)
                 {
                     if (process != null) label = FriendlyAppName(group[0]) + " windows";
+                    if (profileKey != null)
+                    {
+                        var p = BrowserProfiles.ProfileOf(group[0].Hwnd, process!);
+                        if (p.Name.Length > 0) label = p.Name + " windows";
+                    }
 
                     // One-level undo covers everything this arrange touches: the windows being
                     // arranged AND the ones minimized out of the way. The list is z-ordered
@@ -744,7 +828,9 @@ internal sealed class TrayContext : ApplicationContext
                         WindowManager.MinimizeAll(all.Where(w => !keep.Contains(w.Hwnd)).Select(w => w.Hwnd));
                     }
 
-                    LogFlip($"arrange: {shape} \"{process ?? "ALL"}\" — {found} window(s)" +
+                    LogFlip($"arrange: {shape} \"{process ?? "ALL"}\"" +
+                            (profileKey != null ? $" profile \"{label}\" [{profileKey}]" : "") +
+                            $" — {found} window(s)" +
                             (process != null ? $", minimizing {all.Count - found} other(s)" : ""));
                     moved = Arrange.Do(shape, group, spreadAcrossMonitors: process != null);
                     if (moved != found) LogFlip($"  arrange placed {moved} of {found} (rest: closed since, or admin windows we can't touch)");
