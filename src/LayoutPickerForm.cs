@@ -9,9 +9,10 @@ namespace FancySchmancyZones;
 /// <summary>
 /// A full-screen overlay that shows every layout as a clickable card — the "Pick from cards"
 /// double-tap-Ctrl mode. Each card shows the layout's name and a little map of where its windows
-/// sit, so they're easy to tell apart. Click a card (or press 1–9) to switch to it; Esc, or
-/// clicking away, cancels. It takes focus on purpose (unlike the OsdForm flash) so it can receive
-/// the click and the Esc key.
+/// sit, so they're easy to tell apart. Click a card (or press 1–9) to switch to it. Right-click a
+/// card to update, rename, or delete that layout; right-click anywhere else to save the current
+/// windows as a brand-new layout. Esc, or clicking away, cancels. It takes focus on purpose
+/// (unlike the OsdForm flash) so it can receive the clicks and the Esc key.
 /// </summary>
 internal sealed class LayoutPickerForm : Form
 {
@@ -21,11 +22,28 @@ internal sealed class LayoutPickerForm : Form
     /// flips (Ctrl chords, a pending settle) so nothing rearranges windows behind the open picker.</summary>
     public static bool IsOpen => _current is { IsDisposed: false };
 
-    private readonly Action<int> _onPick;
-    private readonly int _count;
+    /// <summary>Everything the picker can do to a layout, keyed by layout NAME rather than index —
+    /// the picker can delete cards while it's open, so list positions shift under it; a name still
+    /// finds the right layout afterward. All callbacks run on the UI thread.</summary>
+    public sealed record PickerActions(
+        Action<string> Switch,
+        Action<string> Update,
+        Action<string> Rename,
+        Action<string> Delete,
+        Action SaveNew);
+
+    private readonly PickerActions _actions;
+    private int _count;
     private readonly Label _title;
     private readonly Label _hint;
     private readonly FlowLayoutPanel _flow;
+
+    // The right-click menus. Created once, closed when the picker closes; disposal is deliberately
+    // left to the GC — disposing a menu while its own Click handler is still on the stack is how
+    // the v0.9.2 tray right-click silently died, so we never dispose one synchronously here.
+    private readonly List<ContextMenuStrip> _menus = new();
+    private int _openMenus;      // >0 while a right-click menu is showing (see WantsKey)
+    private long _menuGraceUntil; // tick until which a deactivate is blamed on a menu, not the user
 
     /// <summary>How much bigger this monitor draws things than a 100% one (2.0 at 200%).</summary>
     private readonly float _s;
@@ -56,9 +74,8 @@ internal sealed class LayoutPickerForm : Form
     /// open right now (closed ones are left out so the card previews what a flip would really do).</summary>
     public sealed record CardInfo(string Name, IReadOnlyList<Rect> OpenWindows);
 
-    /// <summary>Show the picker (or re-focus the one already open). onPick fires with the chosen
-    /// layout index; nothing fires if the user cancels.</summary>
-    public static void Show(IReadOnlyList<CardInfo> cards, int currentIndex, Action<int> onPick)
+    /// <summary>Show the picker (or re-focus the one already open).</summary>
+    public static void Show(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions)
     {
         if (cards.Count == 0) return;
         if (_current is { IsDisposed: false })
@@ -66,16 +83,16 @@ internal sealed class LayoutPickerForm : Form
             _current.Activate();
             return;
         }
-        var f = new LayoutPickerForm(cards, currentIndex, onPick);
+        var f = new LayoutPickerForm(cards, currentIndex, actions);
         _current = f;
         f.FormClosed += (_, _) => { if (ReferenceEquals(_current, f)) _current = null; };
         f.Show();
         f.Activate();
     }
 
-    private LayoutPickerForm(IReadOnlyList<CardInfo> cards, int currentIndex, Action<int> onPick)
+    private LayoutPickerForm(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions)
     {
-        _onPick = onPick;
+        _actions = actions;
         _count = cards.Count;
 
         var screen = Screen.FromPoint(Cursor.Position);
@@ -104,10 +121,12 @@ internal sealed class LayoutPickerForm : Form
         };
         _hint = new Label
         {
-            Text = "Click a card  ·  press 1–9  ·  Esc to cancel",
+            Text = "Click a card  ·  press 1–9  ·  Esc to cancel\n" +
+                   "Right-click a card to update, rename or delete it  ·  right-click the background to save a new layout",
             Font = new Font("Segoe UI", 11.5f),
             ForeColor = Color.FromArgb(165, 165, 175),
             BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleCenter,
             AutoSize = true
         };
         // NOTE: AutoSize + AutoScroll on a FlowLayoutPanel fight each other (mis-measures and drops
@@ -123,9 +142,9 @@ internal sealed class LayoutPickerForm : Form
 
         for (int i = 0; i < cards.Count; i++)
         {
-            int idx = i;
             var card = new Card(cards[i].Name, cards[i].OpenWindows, i + 1, i == currentIndex, _s);
-            card.Click += (_, _) => Pick(idx);
+            card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) PickCard(card); };
+            card.ContextMenuStrip = BuildCardMenu(card);
             _flow.Controls.Add(card);
         }
 
@@ -133,12 +152,112 @@ internal sealed class LayoutPickerForm : Form
         Controls.Add(_title);
         Controls.Add(_hint);
 
-        // Clicking anywhere that isn't a card cancels (backdrop, title, hint, panel gaps). A child
-        // control's Click doesn't bubble to the Form, so wire the non-card controls explicitly.
-        Click += (_, _) => Close();
-        _title.Click += (_, _) => Close();
-        _hint.Click += (_, _) => Close();
-        _flow.Click += (_, _) => Close();
+        // Left-clicking anywhere that isn't a card cancels (backdrop, title, hint, panel gaps). A
+        // child control's clicks don't bubble to the Form, so wire the non-card controls explicitly.
+        void CancelOnLeftClick(Control c) =>
+            c.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Close(); };
+        CancelOnLeftClick(this);
+        CancelOnLeftClick(_title);
+        CancelOnLeftClick(_hint);
+        CancelOnLeftClick(_flow);
+
+        // Right-clicking anything that isn't a card offers "save these windows as a new layout".
+        // Set on the Form only: WM_CONTEXTMENU bubbles up from the labels and the flow panel on its
+        // own, and the cards intercept it first with their own menus.
+        var back = NewMenu();
+        back.Items.Add(Item("Save current windows as a new layout…", () => { Close(); _actions.SaveNew(); }));
+        ContextMenuStrip = back;
+
+        // If the picker closes while a right-click menu is up (Esc arrives via the global hook),
+        // take the menu down with it — an orphaned menu floating over the desktop looks broken.
+        FormClosed += (_, _) => { foreach (var m in _menus) m.Close(); _menus.Clear(); };
+    }
+
+    // ---- Right-click menus ----
+
+    private ContextMenuStrip BuildCardMenu(Card card)
+    {
+        var m = NewMenu();
+        m.Items.Add(new ToolStripMenuItem(card.LayoutName) { Enabled = false });   // header: which card
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(Item("Switch to this layout", () => PickCard(card)));
+        m.Items.Add(Item("Update it to my current windows", () => { Close(); _actions.Update(card.LayoutName); }));
+        m.Items.Add(Item("Rename…", () => { Close(); _actions.Rename(card.LayoutName); }));
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(Item("Delete this layout", () => DeleteCard(card)));
+        return m;
+    }
+
+    private ContextMenuStrip NewMenu()
+    {
+        var m = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            BackColor = MenuBack,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10.5f),
+            Renderer = new ToolStripProfessionalRenderer(new DarkMenuColors()) { RoundedEdges = false }
+        };
+        m.Opened += (_, _) => { _openMenus++; _menuGraceUntil = long.MaxValue; };
+        m.Closed += (_, _) => { _openMenus--; _menuGraceUntil = Environment.TickCount64 + 600; };
+        _menus.Add(m);
+        return m;
+    }
+
+    private static ToolStripMenuItem Item(string text, Action onClick)
+    {
+        var it = new ToolStripMenuItem(text) { ForeColor = Color.White };
+        it.Click += (_, _) => onClick();
+        return it;
+    }
+
+    private static readonly Color MenuBack = Color.FromArgb(34, 34, 40);
+
+    /// <summary>Match the menus to the overlay — the stock white WinForms menu on this near-black
+    /// backdrop looked like a rendering glitch, not a feature.</summary>
+    private sealed class DarkMenuColors : ProfessionalColorTable
+    {
+        private static readonly Color Hover = Color.FromArgb(55, 58, 72);
+        private static readonly Color Line = Color.FromArgb(70, 70, 82);
+        public override Color ToolStripDropDownBackground => MenuBack;
+        public override Color ImageMarginGradientBegin => MenuBack;
+        public override Color ImageMarginGradientMiddle => MenuBack;
+        public override Color ImageMarginGradientEnd => MenuBack;
+        public override Color MenuItemSelected => Hover;
+        public override Color MenuItemSelectedGradientBegin => Hover;
+        public override Color MenuItemSelectedGradientEnd => Hover;
+        public override Color MenuItemBorder => Hover;
+        public override Color MenuBorder => Line;
+        public override Color SeparatorDark => Line;
+        public override Color SeparatorLight => Line;
+    }
+
+    // ---- Actions ----
+
+    // Close BEFORE acting, so the overlay is gone by the time windows shuffle or a dialog opens.
+    private void PickCard(Card card) { Close(); _actions.Switch(card.LayoutName); }
+
+    /// <summary>Pick the nth card as currently shown (keyboard 1–9). Goes through the flow panel's
+    /// live order, not the list the picker opened with — deletes may have shifted the cards.</summary>
+    private void Pick(int n)
+    {
+        var cards = _flow.Controls.OfType<Card>().ToList();
+        if (n >= 0 && n < cards.Count) PickCard(cards[n]);
+    }
+
+    /// <summary>Right-click → Delete: remove the layout AND its card, keeping the picker open (so
+    /// several can be pruned in one visit). The other cards renumber so the 1–9 keys stay true.</summary>
+    private void DeleteCard(Card card)
+    {
+        _actions.Delete(card.LayoutName);          // the part that matters, done first
+        if (IsDisposed || Disposing) return;       // picker somehow closed mid-click — layout's gone, UI's gone
+        _flow.Controls.Remove(card);
+        card.Dispose();
+        _count--;
+        if (_count <= 0) { Close(); return; }
+        int n = 0;
+        foreach (var c in _flow.Controls.OfType<Card>()) c.SetNumber(++n <= 9 ? n : 0);
+        LayoutContents();
     }
 
     protected override void OnShown(EventArgs e)
@@ -157,6 +276,11 @@ internal sealed class LayoutPickerForm : Form
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
+        // ...unless a right-click menu is up or just closed: a closing menu can bounce activation
+        // to another app before a tray app is allowed to reclaim it (verified live — Esc on a card
+        // menu was tearing down the whole picker). The picker works fine without focus anyway (the
+        // global hook feeds it keys), so staying open here matches the no-focus case, not a leak.
+        if (_openMenus > 0 || Environment.TickCount64 < _menuGraceUntil) return;
         if (!IsDisposed && !Disposing) Close();
     }
 
@@ -164,9 +288,16 @@ internal sealed class LayoutPickerForm : Form
 
     private const int VK_ESCAPE = 0x1B, VK_1 = 0x31, VK_9 = 0x39, VK_NUMPAD1 = 0x61, VK_NUMPAD9 = 0x69;
 
-    /// <summary>Does the open picker want this virtual-key? (Esc, or 1–9 / numpad 1–9.)</summary>
-    public static bool WantsKey(int vk) =>
-        IsOpen && (vk == VK_ESCAPE || (vk >= VK_1 && vk <= VK_9) || (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9));
+    /// <summary>Does the open picker want this virtual-key? (Esc, or 1–9 / numpad 1–9.) While a
+    /// right-click menu is up the answer is NO: the menu has real focus (the click that opened it
+    /// activated us), so Esc should close just the menu and digits belong to it — the hook
+    /// swallowing them would close the whole picker out from under the open menu.</summary>
+    public static bool WantsKey(int vk)
+    {
+        var f = _current;
+        if (f is null || f.IsDisposed || f._openMenus > 0) return false;
+        return vk == VK_ESCAPE || (vk >= VK_1 && vk <= VK_9) || (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9);
+    }
 
     /// <summary>Act on a key the global hook routed to us (call on key-DOWN). Marshals to the UI thread.</summary>
     public static void PressKey(int vk)
@@ -212,17 +343,17 @@ internal sealed class LayoutPickerForm : Form
         if (n >= 0 && n < _count) Pick(n);
     }
 
-    // Close BEFORE arranging, so the overlay is gone by the time the windows shuffle.
-    private void Pick(int idx) { Close(); _onPick(idx); }
-
     /// <summary>One layout tile: name, a little scaled map of its window rectangles, and a number.</summary>
     private sealed class Card : Panel
     {
         private readonly string _name;
         private readonly IReadOnlyList<Rect> _openWindows;
-        private readonly int _number;      // 1-based; the keyboard shortcut. 0 = none.
+        private int _number;               // 1-based; the keyboard shortcut. 0 = none.
         private readonly bool _isCurrent;
         private bool _hover;
+
+        /// <summary>The layout this card stands for — the stable identity the picker's actions use.</summary>
+        public string LayoutName => _name;
 
         public Card(string name, IReadOnlyList<Rect> openWindows, int number, bool isCurrent, float s)
         {
@@ -239,6 +370,14 @@ internal sealed class LayoutPickerForm : Form
             BackColor = Color.FromArgb(34, 34, 40);
             MouseEnter += (_, _) => { _hover = true; Invalidate(); };
             MouseLeave += (_, _) => { _hover = false; Invalidate(); };
+        }
+
+        /// <summary>Re-badge the card after a delete shifted everything up (keeps 1–9 truthful).</summary>
+        public void SetNumber(int n)
+        {
+            if (_number == n) return;
+            _number = n;
+            Invalidate();
         }
 
         protected override void OnPaint(PaintEventArgs e)

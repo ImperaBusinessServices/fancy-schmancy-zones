@@ -1120,12 +1120,20 @@ internal sealed class TrayContext : ApplicationContext
 
             // Apply immediately if we can; if a previous switch is still finishing (_activating),
             // queue via the settle timer's retry so the pick is never silently dropped.
-            _sync.BeginInvoke((Action)(() => LayoutPickerForm.Show(cards, currentIndex, idx =>
-            {
-                if (!Activate(idx)) RequestFlip(idx);
-            })));
+            // The picker's right-click actions hand back layout NAMES, not indexes — it can delete
+            // cards while it's open, so positions shift under it; resolving the name at click time
+            // always finds the layout that card actually stood for.
+            _sync.BeginInvoke((Action)(() => LayoutPickerForm.Show(cards, currentIndex, new LayoutPickerForm.PickerActions(
+                Switch: name => { int i = LayoutIndex(name); if (i >= 0 && !Activate(i)) RequestFlip(i); },
+                Update: name => { int i = LayoutIndex(name); if (i >= 0) UpdateLayout(i); },
+                Rename: name => { int i = LayoutIndex(name); if (i >= 0) Rename(i); },
+                Delete: name => { int i = LayoutIndex(name); if (i >= 0) Delete(i); },
+                SaveNew: LockCurrent))));
         });
     }
+
+    private int LayoutIndex(string name) =>
+        _state.Layouts.FindIndex(l => l.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
     private void Cycle(int direction)
     {
@@ -1196,6 +1204,8 @@ internal sealed class TrayContext : ApplicationContext
             "Flipping brings that layout's windows to their saved spots and to the front.\n" +
             "Flip quickly several times to skim — the layout name pops up on screen as you go, " +
             "and the windows arrange once you stop.\n" +
+            "In the card picker, right-click a card to update, rename, or delete that layout — " +
+            "or right-click the dark background to save your current windows as a new layout.\n" +
             "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
             "ARRANGE WINDOWS:\n" +
             "\"Arrange windows\" (in the tray menu) tidies what's open right now: pick an app " +

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0 — 2026-07-16 (not yet released)
+
+- **The card picker is interactive now.** Right-click any layout card to **update it to your
+  current windows**, **rename** it, or **delete** it — the card disappears on the spot and the
+  others renumber, so you can prune several layouts in one visit. Right-click the dark background
+  to **save your current windows as a brand-new layout** without touching the tray menu.
+- The right-click menus match the picker's dark look, and closing one no longer risks the whole
+  overlay vanishing with it.
+
 ## 0.10.1 — 2026-07-04
 
 - **The layout cards now preview what you'll actually get.** Each card's little map only draws the
