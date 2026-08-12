@@ -224,22 +224,31 @@ internal sealed class LayoutPickerForm : Form
         {
             int slop = Math.Max(SystemInformation.DragSize.Width, (int)(6 * _s));
             if (Math.Abs(now.X - _pressScreenPt.X) < slop && Math.Abs(now.Y - _pressScreenPt.Y) < slop) return;
-            StartDrag(card);
+            if (!StartDrag(card)) return;
         }
         var p = PointToClient(now);
         _ghost!.Location = new Point(p.X - _grabOffset.X, p.Y - _grabOffset.Y);
         MoveCardTo(card, DropIndexFor(card, _flow.PointToClient(now)));
     }
 
-    private void StartDrag(Card card)
+    /// <summary>Lift the card. Only reports the drag started once the ghost really exists — every
+    /// later move dereferences it, and a half-started drag would throw on each one, straight into
+    /// the message loop.</summary>
+    private bool StartDrag(Card card)
     {
+        try
+        {
+            _ghost = DragGhost.Of(card);  // snapshot FIRST — before the card turns into a placeholder
+            Controls.Add(_ghost);
+            _ghost.BringToFront();
+        }
+        catch { KillGhost(); return false; }
+
         _dragging = true;
         card.Capture = true;              // keep the moves coming once the pointer leaves the card
         card.Cursor = Cursors.SizeAll;
-        _ghost = DragGhost.Of(card);      // snapshot FIRST — before the card turns into a placeholder
-        Controls.Add(_ghost);
-        _ghost.BringToFront();
         card.SetPlaceholder(true);
+        return true;
     }
 
     private void EndDrag()
