@@ -9,8 +9,9 @@ namespace FancySchmancyZones;
 /// <summary>
 /// A full-screen overlay that shows every layout as a clickable card — the "Pick from cards"
 /// double-tap-Ctrl mode. Each card shows the layout's name and a little map of where its windows
-/// sit, so they're easy to tell apart. Click a card (or press 1–9) to switch to it. Right-click a
-/// card to update, rename, or delete that layout; right-click anywhere else to save the current
+/// sit, so they're easy to tell apart. Click a card (or press 1–9) to switch to it. Drag a card to
+/// a new spot to reorder the layouts for good (the 1–9 keys and the tray list follow). Right-click
+/// a card to update, rename, or delete that layout; right-click anywhere else to save the current
 /// windows as a brand-new layout. Esc, or clicking away, cancels. It takes focus on purpose
 /// (unlike the OsdForm flash) so it can receive the clicks and the Esc key.
 /// </summary>
@@ -30,7 +31,8 @@ internal sealed class LayoutPickerForm : Form
         Action<string> Update,
         Action<string> Rename,
         Action<string> Delete,
-        Action SaveNew);
+        Action SaveNew,
+        Action<IReadOnlyList<string>> Reorder);
 
     private readonly PickerActions _actions;
     private int _count;
@@ -121,7 +123,7 @@ internal sealed class LayoutPickerForm : Form
         };
         _hint = new Label
         {
-            Text = "Click a card  ·  press 1–9  ·  Esc to cancel\n" +
+            Text = "Click a card  ·  press 1–9  ·  drag a card to put it in a new spot  ·  Esc to cancel\n" +
                    "Right-click a card to update, rename or delete it  ·  right-click the background to save a new layout",
             Font = new Font("Segoe UI", 11.5f),
             ForeColor = Color.FromArgb(165, 165, 175),
@@ -143,7 +145,12 @@ internal sealed class LayoutPickerForm : Form
         for (int i = 0; i < cards.Count; i++)
         {
             var card = new Card(cards[i].Name, cards[i].OpenWindows, i + 1, i == currentIndex, _s);
-            card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) PickCard(card); };
+            // Press-move-release is a REORDER; press-release on the spot is a PICK. JustDragged is
+            // what keeps the drop from also counting as "switch to this layout".
+            card.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginPress(card, e); };
+            card.MouseMove += (_, e) => DragTo(card, e);
+            card.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
+            card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !JustDragged) PickCard(card); };
             card.ContextMenuStrip = BuildCardMenu(card);
             _flow.Controls.Add(card);
         }
@@ -154,8 +161,9 @@ internal sealed class LayoutPickerForm : Form
 
         // Left-clicking anywhere that isn't a card cancels (backdrop, title, hint, panel gaps). A
         // child control's clicks don't bubble to the Form, so wire the non-card controls explicitly.
+        // (JustDragged: releasing a dragged card out over the backdrop must not also cancel.)
         void CancelOnLeftClick(Control c) =>
-            c.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Close(); };
+            c.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !JustDragged) Close(); };
         CancelOnLeftClick(this);
         CancelOnLeftClick(_title);
         CancelOnLeftClick(_hint);
@@ -170,7 +178,163 @@ internal sealed class LayoutPickerForm : Form
 
         // If the picker closes while a right-click menu is up (Esc arrives via the global hook),
         // take the menu down with it — an orphaned menu floating over the desktop looks broken.
-        FormClosed += (_, _) => { foreach (var m in _menus) m.Close(); _menus.Clear(); };
+        // Same for a half-finished drag: the floating card goes with it.
+        FormClosed += (_, _) => { foreach (var m in _menus) m.Close(); _menus.Clear(); KillGhost(); };
+    }
+
+    // ---- Drag a card to reorder ----
+    //
+    // Deliberately hand-rolled (mouse capture) rather than WinForms' DoDragDrop: that spins its own
+    // modal message loop, which on a topmost overlay owned by a tray app — one Windows usually
+    // refuses to give real focus — is exactly where the global keyboard hook and the deactivate
+    // guard start fighting each other. Capture keeps the whole gesture inside our own message loop.
+    //
+    // While the drag runs, the card itself stays IN the flow panel as a dashed "it'll land here"
+    // slot that hops between positions, and a snapshot of it (the ghost) floats under the cursor.
+
+    private Card? _pressed;          // the card the mouse went down on — may never become a drag
+    private Point _pressScreenPt;    // where the press happened, in SCREEN pixels (see DragTo)
+    private Point _grabOffset;       // where inside the card it was grabbed, so the ghost hangs right
+    private bool _dragging;          // past the wiggle threshold: a real drag is under way
+    private long _dragEndedTick;     // when the last drag finished (see JustDragged)
+    private DragGhost? _ghost;
+
+    /// <summary>Did a drag just end? The mouse-up that drops a card is also delivered as a Click,
+    /// and that click must not double as "switch to this layout" (or, out over the backdrop, as
+    /// "cancel"). Time-boxed rather than a flag so it always clears itself, even if the click the
+    /// flag was waiting for never arrives.</summary>
+    private bool JustDragged => Environment.TickCount64 - _dragEndedTick < 250;
+
+    private void BeginPress(Card card, MouseEventArgs e)
+    {
+        _pressed = card;
+        _dragging = false;
+        _pressScreenPt = Cursor.Position;
+        _grabOffset = e.Location;
+    }
+
+    private void DragTo(Card card, MouseEventArgs e)
+    {
+        if (!ReferenceEquals(_pressed, card) || (e.Button & MouseButtons.Left) == 0) return;
+
+        // Screen coordinates throughout: e.Location is relative to the card, and the card moves out
+        // from under the cursor mid-drag, so card-relative maths would jitter against itself.
+        var now = Cursor.Position;
+        if (!_dragging)
+        {
+            int slop = Math.Max(SystemInformation.DragSize.Width, (int)(6 * _s));
+            if (Math.Abs(now.X - _pressScreenPt.X) < slop && Math.Abs(now.Y - _pressScreenPt.Y) < slop) return;
+            StartDrag(card);
+        }
+        var p = PointToClient(now);
+        _ghost!.Location = new Point(p.X - _grabOffset.X, p.Y - _grabOffset.Y);
+        MoveCardTo(card, DropIndexFor(card, _flow.PointToClient(now)));
+    }
+
+    private void StartDrag(Card card)
+    {
+        _dragging = true;
+        card.Capture = true;              // keep the moves coming once the pointer leaves the card
+        card.Cursor = Cursors.SizeAll;
+        _ghost = DragGhost.Of(card);      // snapshot FIRST — before the card turns into a placeholder
+        Controls.Add(_ghost);
+        _ghost.BringToFront();
+        card.SetPlaceholder(true);
+    }
+
+    private void EndDrag()
+    {
+        var card = _pressed;
+        _pressed = null;
+        if (card is null || card.IsDisposed) return;
+        card.Capture = false;
+        if (!_dragging) return;           // a plain click: leave it to the Click handler to pick
+
+        _dragging = false;
+        _dragEndedTick = Environment.TickCount64;
+        card.Cursor = Cursors.Hand;
+        card.SetPlaceholder(false);
+        KillGhost();
+        // Save the new order. By NAME, like every other picker action — the layout list can have
+        // shifted underneath us while the picker sat open.
+        _actions.Reorder(_flow.Controls.OfType<Card>().Select(c => c.LayoutName).ToList());
+    }
+
+    private void KillGhost()
+    {
+        if (_ghost is null) return;
+        Controls.Remove(_ghost);
+        _ghost.Dispose();
+        _ghost = null;
+    }
+
+    /// <summary>Which slot the dragged card should sit in for this cursor position. Walks the OTHER
+    /// cards in display order and stops at the first one the cursor is "before" — past the halfway
+    /// line of a card on the cursor's own row, or anywhere on a row below it (the cards wrap onto
+    /// several rows once there are enough of them).</summary>
+    private int DropIndexFor(Card dragged, Point ptInFlow)
+    {
+        var others = _flow.Controls.OfType<Card>().Where(c => !ReferenceEquals(c, dragged)).ToList();
+        for (int i = 0; i < others.Count; i++)
+        {
+            var b = others[i].Bounds;
+            if (ptInFlow.Y < b.Top || (ptInFlow.Y <= b.Bottom && ptInFlow.X < b.Left + b.Width / 2)) return i;
+        }
+        return others.Count;   // past everything — drop at the end
+    }
+
+    /// <summary>Slide the card into slot n. The flow panel holds nothing but cards, so an index into
+    /// "the others" and a child index are the same number once the card is re-inserted.</summary>
+    private void MoveCardTo(Card card, int n)
+    {
+        if (n < 0 || n == _flow.Controls.GetChildIndex(card)) return;
+        _flow.SuspendLayout();
+        _flow.Controls.SetChildIndex(card, n);
+        _flow.ResumeLayout(true);
+        Renumber();                       // keep the 1–9 badges honest as the cards shuffle
+    }
+
+    /// <summary>Re-badge every card 1, 2, 3… in its current position (after a drag or a delete).</summary>
+    private void Renumber()
+    {
+        int n = 0;
+        foreach (var c in _flow.Controls.OfType<Card>()) c.SetNumber(++n <= 9 ? n : 0);
+    }
+
+    /// <summary>The card that floats under the cursor while it's being dragged: just a snapshot of
+    /// the real one, lifted onto the form above the flow panel. Disabled so it can't swallow a
+    /// click, though mouse capture means every message is going to the dragged card anyway.</summary>
+    private sealed class DragGhost : Control
+    {
+        private readonly Bitmap _shot;
+
+        private DragGhost(Bitmap shot)
+        {
+            _shot = shot;
+            Size = shot.Size;
+            Enabled = false;
+            DoubleBuffered = true;
+        }
+
+        public static DragGhost Of(Card card)
+        {
+            var shot = new Bitmap(card.Width, card.Height);
+            card.DrawToBitmap(shot, new Rectangle(0, 0, card.Width, card.Height));
+            return new DragGhost(shot);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.DrawImageUnscaled(_shot, 0, 0);
+            using var pen = new Pen(Color.FromArgb(150, 195, 255), 2f);
+            e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _shot.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     // ---- Right-click menus ----
@@ -251,12 +415,12 @@ internal sealed class LayoutPickerForm : Form
     {
         _actions.Delete(card.LayoutName);          // the part that matters, done first
         if (IsDisposed || Disposing) return;       // picker somehow closed mid-click — layout's gone, UI's gone
+        if (ReferenceEquals(_pressed, card)) { _pressed = null; KillGhost(); _dragging = false; }
         _flow.Controls.Remove(card);
         card.Dispose();
         _count--;
         if (_count <= 0) { Close(); return; }
-        int n = 0;
-        foreach (var c in _flow.Controls.OfType<Card>()) c.SetNumber(++n <= 9 ? n : 0);
+        Renumber();
         LayoutContents();
     }
 
@@ -351,6 +515,7 @@ internal sealed class LayoutPickerForm : Form
         private int _number;               // 1-based; the keyboard shortcut. 0 = none.
         private readonly bool _isCurrent;
         private bool _hover;
+        private bool _placeholder;         // true while this card is the one being dragged
 
         /// <summary>The layout this card stands for — the stable identity the picker's actions use.</summary>
         public string LayoutName => _name;
@@ -372,11 +537,23 @@ internal sealed class LayoutPickerForm : Form
             MouseLeave += (_, _) => { _hover = false; Invalidate(); };
         }
 
-        /// <summary>Re-badge the card after a delete shifted everything up (keeps 1–9 truthful).</summary>
+        /// <summary>Re-badge the card after a drag or a delete shifted everything (keeps 1–9 truthful).</summary>
         public void SetNumber(int n)
         {
             if (_number == n) return;
             _number = n;
+            Invalidate();
+        }
+
+        /// <summary>Turn the card into the empty dashed slot that shows where the card being dragged
+        /// will land — the card's contents are floating under the cursor while this is on.</summary>
+        public void SetPlaceholder(bool on)
+        {
+            if (_placeholder == on) return;
+            _placeholder = on;
+            // Coming back from a drag the pointer has been captured elsewhere the whole time, so
+            // MouseEnter/MouseLeave never fired — work out the hover state from where it actually is.
+            if (!on) _hover = ClientRectangle.Contains(PointToClient(Cursor.Position));
             Invalidate();
         }
 
@@ -385,6 +562,13 @@ internal sealed class LayoutPickerForm : Form
             base.OnPaint(e);
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            if (_placeholder)
+            {
+                using var slotPen = new Pen(Color.FromArgb(120, 175, 255), 2f) { DashStyle = DashStyle.Dash };
+                g.DrawRectangle(slotPen, 2, 2, Width - 5, Height - 5);
+                return;
+            }
 
             Color borderColor = _hover ? Color.FromArgb(120, 175, 255)
                               : _isCurrent ? Color.FromArgb(95, 135, 205)

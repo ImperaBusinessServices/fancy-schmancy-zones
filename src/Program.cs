@@ -1209,12 +1209,44 @@ internal sealed class TrayContext : ApplicationContext
                 Update: name => { int i = LayoutIndex(name); if (i >= 0) UpdateLayout(i); },
                 Rename: name => { int i = LayoutIndex(name); if (i >= 0) Rename(i); },
                 Delete: name => { int i = LayoutIndex(name); if (i >= 0) Delete(i); },
-                SaveNew: LockCurrent))));
+                SaveNew: LockCurrent,
+                Reorder: Reorder))));
         });
     }
 
     private int LayoutIndex(string name) =>
         _state.Layouts.FindIndex(l => l.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Put the layouts in the order the user just dragged the picker's cards into. That
+    /// order is the app's real order: it drives the 1–9 keys, the tray list, and which layout
+    /// next/previous lands on.</summary>
+    private void Reorder(IReadOnlyList<string> names)
+    {
+        // _currentIndex is a POSITION, so remember WHICH layout it meant and find it again after.
+        string? current = _currentIndex >= 0 && _currentIndex < _state.Layouts.Count
+            ? _state.Layouts[_currentIndex].Name : null;
+
+        // Rebuild from the picker's names, taking each layout out of a working copy as it's placed.
+        // Anything left over — a layout saved from the tray while the picker sat open, so its card
+        // never existed — keeps its relative order on the end. A stale card list can't drop one.
+        var left = new List<LockedLayout>(_state.Layouts);
+        var ordered = new List<LockedLayout>(left.Count);
+        foreach (var name in names)
+        {
+            int i = left.FindIndex(l => l.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (i < 0) continue;                  // deleted behind the picker — nothing to place
+            ordered.Add(left[i]);
+            left.RemoveAt(i);
+        }
+        ordered.AddRange(left);
+        if (ordered.Count != _state.Layouts.Count) return;   // paranoia: never save a short list
+
+        _state.Layouts.Clear();
+        _state.Layouts.AddRange(ordered);
+        _currentIndex = current is null ? -1 : LayoutIndex(current);
+        _state.Save();
+        RebuildMenu();
+    }
 
     private void Cycle(int direction)
     {
@@ -1320,8 +1352,10 @@ internal sealed class TrayContext : ApplicationContext
             "Flipping brings that layout's windows to their saved spots and to the front.\n" +
             "Flip quickly several times to skim — the layout name pops up on screen as you go, " +
             "and the windows arrange once you stop.\n" +
-            "In the card picker, right-click a card to update, rename, or delete that layout — " +
-            "or right-click the dark background to save your current windows as a new layout.\n" +
+            "In the card picker, drag a card to a new spot to put your layouts in the order you " +
+            "want them — the number keys and the tray list follow. Right-click a card to update, " +
+            "rename, or delete that layout — or right-click the dark background to save your " +
+            "current windows as a new layout.\n" +
             "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
             "ARRANGE WINDOWS:\n" +
             "\"Arrange windows\" (in the tray menu) tidies what's open right now: pick an app " +
