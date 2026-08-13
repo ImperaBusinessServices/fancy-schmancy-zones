@@ -205,6 +205,17 @@ internal sealed class LayoutPickerForm : Form
     /// flag was waiting for never arrives.</summary>
     private bool JustDragged => Environment.TickCount64 - _dragEndedTick < 250;
 
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+    private const int VK_LBUTTON = 0x01;
+
+    /// <summary>Is the left button physically down? `GetAsyncKeyState` asks the SYSTEM. The obvious
+    /// alternative — the `e.Button` on a MouseMove — is `Control.MouseButtons`, i.e. `GetKeyState`,
+    /// which answers per-THREAD from the input this thread has been given. That is precisely the
+    /// thing this picker can't rely on: it belongs to a tray app Windows denies foreground, so its
+    /// moves arrived reporting no buttons held, the drag never started, and the drop fell through
+    /// as a plain click that flipped layouts instead (Keith: "i did it, but it didnt stick").</summary>
+    private static bool LeftButtonDown => (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
     private void BeginPress(Card card, MouseEventArgs e)
     {
         _pressed = card;
@@ -215,7 +226,10 @@ internal sealed class LayoutPickerForm : Form
 
     private void DragTo(Card card, MouseEventArgs e)
     {
-        if (!ReferenceEquals(_pressed, card) || (e.Button & MouseButtons.Left) == 0) return;
+        if (!ReferenceEquals(_pressed, card)) return;
+        // If the button came up without us hearing the MouseUp, treat this as the drop rather than
+        // dragging on invisibly — self-healing, and a released button always means "let go".
+        if (!LeftButtonDown) { EndDrag(); return; }
 
         // Screen coordinates throughout: e.Location is relative to the card, and the card moves out
         // from under the cursor mid-drag, so card-relative maths would jitter against itself.
@@ -242,7 +256,7 @@ internal sealed class LayoutPickerForm : Form
             Controls.Add(_ghost);
             _ghost.BringToFront();
         }
-        catch { KillGhost(); return false; }
+        catch (Exception ex) { TrayContext.LogFlip($"drag: GHOST FAILED — {ex}"); KillGhost(); return false; }
 
         _dragging = true;
         card.Capture = true;              // keep the moves coming once the pointer leaves the card
@@ -255,7 +269,11 @@ internal sealed class LayoutPickerForm : Form
     {
         var card = _pressed;
         _pressed = null;
-        if (card is null || card.IsDisposed) return;
+        if (card is null || card.IsDisposed)
+        {
+            TrayContext.LogFlip($"drag: mouse-up with no live card (pressed={(card is null ? "null" : "disposed")}, dragging={_dragging})");
+            return;
+        }
         card.Capture = false;
         if (!_dragging) return;           // a plain click: leave it to the Click handler to pick
 
@@ -266,7 +284,9 @@ internal sealed class LayoutPickerForm : Form
         KillGhost();
         // Save the new order. By NAME, like every other picker action — the layout list can have
         // shifted underneath us while the picker sat open.
-        _actions.Reorder(_flow.Controls.OfType<Card>().Select(c => c.LayoutName).ToList());
+        var order = _flow.Controls.OfType<Card>().Select(c => c.LayoutName).ToList();
+        TrayContext.LogFlip($"drag: dropped \"{card.LayoutName}\" -> {string.Join(" | ", order)}");
+        _actions.Reorder(order);
     }
 
     private void KillGhost()

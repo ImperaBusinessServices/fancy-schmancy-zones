@@ -1239,12 +1239,21 @@ internal sealed class TrayContext : ApplicationContext
             left.RemoveAt(i);
         }
         ordered.AddRange(left);
-        if (ordered.Count != _state.Layouts.Count) return;   // paranoia: never save a short list
+        if (ordered.Count != _state.Layouts.Count)
+        {
+            LogFlip($"reorder: REFUSED — got {ordered.Count} layouts, have {_state.Layouts.Count}");
+            return;   // paranoia: never save a short list
+        }
 
         _state.Layouts.Clear();
         _state.Layouts.AddRange(ordered);
         _currentIndex = current is null ? -1 : LayoutIndex(current);
-        _state.Save();
+        try
+        {
+            _state.Save();
+            LogFlip($"reorder: saved -> {string.Join(" | ", _state.Layouts.Select(l => l.Name))}");
+        }
+        catch (Exception ex) { LogFlip($"reorder: SAVE FAILED — {ex.Message}"); Program.LogCrash(ex); }
         RebuildMenu();
     }
 
