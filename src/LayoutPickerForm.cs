@@ -150,7 +150,7 @@ internal sealed class LayoutPickerForm : Form
             card.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginPress(card, e); };
             card.MouseMove += (_, e) => DragTo(card, e);
             card.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
-            card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !JustDragged) PickCard(card); };
+            card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !GestureWasDrag) PickCard(card); };
             card.ContextMenuStrip = BuildCardMenu(card);
             _flow.Controls.Add(card);
         }
@@ -163,7 +163,12 @@ internal sealed class LayoutPickerForm : Form
         // child control's clicks don't bubble to the Form, so wire the non-card controls explicitly.
         // (JustDragged: releasing a dragged card out over the backdrop must not also cancel.)
         void CancelOnLeftClick(Control c) =>
-            c.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !JustDragged) Close(); };
+            c.MouseClick += (_, e) =>
+            {
+                if (e.Button != MouseButtons.Left || GestureWasDrag) return;
+                TrayContext.LogFlip($"picker: backdrop click -> closing");
+                Close();
+            };
         CancelOnLeftClick(this);
         CancelOnLeftClick(_title);
         CancelOnLeftClick(_hint);
@@ -199,11 +204,18 @@ internal sealed class LayoutPickerForm : Form
     private long _dragEndedTick;     // when the last drag finished (see JustDragged)
     private DragGhost? _ghost;
 
-    /// <summary>Did a drag just end? The mouse-up that drops a card is also delivered as a Click,
-    /// and that click must not double as "switch to this layout" (or, out over the backdrop, as
-    /// "cancel"). Time-boxed rather than a flag so it always clears itself, even if the click the
-    /// flag was waiting for never arrives.</summary>
-    private bool JustDragged => Environment.TickCount64 - _dragEndedTick < 250;
+    /// <summary>Is this click really the end of a drag? Dropping a card also delivers a Click, and
+    /// that click must not double as "switch to this layout" (or, out over the backdrop, as
+    /// "cancel").
+    ///
+    /// BOTH halves are load-bearing, because of an ordering in WinForms that reads backwards:
+    /// `Control.WmMouseUp` raises **OnClick/OnMouseClick BEFORE OnMouseUp**. So at the moment the
+    /// click arrives, EndDrag has NOT run yet and `_dragEndedTick` is still stale — `_dragging` is
+    /// the only half that's true. (`_dragEndedTick` covers the reverse: a stray click arriving just
+    /// after a drop, and it's time-boxed so it always clears itself.) Checking only the tick is the
+    /// bug Keith hit twice: the drop picked the layout, closed the picker, and the mouse-up that
+    /// followed found its own card already disposed — so the new order was never saved.</summary>
+    private bool GestureWasDrag => _dragging || Environment.TickCount64 - _dragEndedTick < 250;
 
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
     private const int VK_LBUTTON = 0x01;
@@ -271,7 +283,12 @@ internal sealed class LayoutPickerForm : Form
         _pressed = null;
         if (card is null || card.IsDisposed)
         {
-            TrayContext.LogFlip($"drag: mouse-up with no live card (pressed={(card is null ? "null" : "disposed")}, dragging={_dragging})");
+            // Only worth a line if a real drag was lost. On an ordinary click this is the NORMAL
+            // path — PickCard closed the picker before the mouse-up got here — and logging it every
+            // time buries the interesting case (which is exactly what happened while diagnosing it).
+            if (_dragging)
+                TrayContext.LogFlip($"drag: LOST — the picker closed mid-drag, new order not saved");
+            _dragging = false;
             return;
         }
         card.Capture = false;
@@ -428,7 +445,12 @@ internal sealed class LayoutPickerForm : Form
     // ---- Actions ----
 
     // Close BEFORE acting, so the overlay is gone by the time windows shuffle or a dialog opens.
-    private void PickCard(Card card) { Close(); _actions.Switch(card.LayoutName); }
+    private void PickCard(Card card)
+    {
+        TrayContext.LogFlip($"picker: PICK \"{card.LayoutName}\" -> closing");
+        Close();
+        _actions.Switch(card.LayoutName);
+    }
 
     /// <summary>Pick the nth card as currently shown (keyboard 1–9). Goes through the flow panel's
     /// live order, not the list the picker opened with — deletes may have shifted the cards.</summary>
@@ -474,7 +496,9 @@ internal sealed class LayoutPickerForm : Form
         // menu was tearing down the whole picker). The picker works fine without focus anyway (the
         // global hook feeds it keys), so staying open here matches the no-focus case, not a leak.
         if (_openMenus > 0 || Environment.TickCount64 < _menuGraceUntil) return;
-        if (!IsDisposed && !Disposing) Close();
+        if (IsDisposed || Disposing) return;   // already gone; a deactivate always trails a close
+        TrayContext.LogFlip($"picker: lost activation -> closing (dragging={_dragging})");
+        Close();
     }
 
     // ---- Keyboard delivered by the app's global hook (works even though we usually lack focus) ----
