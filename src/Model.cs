@@ -77,6 +77,13 @@ public sealed class AppSettings
     // when the page has changed since you locked the layout. Off = browser windows only ever match
     // by their exact page (safer, but a re-tabbed window won't be placed).
     public bool LooseBrowserMatch { get; set; } = true;
+
+    // What right-clicking a card in the picker does. Off (the default, and what every existing
+    // install keeps) opens the little menu — Switch / Update / Rename / Delete. On makes a
+    // right-click go straight to "update this layout to my current windows", no menu, because
+    // that's the one people reach for constantly and the menu is a second click every time.
+    // Either way, right-clicking the BACKDROP still offers "save as a new layout".
+    public bool PickerRightClickUpdates { get; set; } = false;
 }
 
 /// <summary>Everything we persist between runs.</summary>

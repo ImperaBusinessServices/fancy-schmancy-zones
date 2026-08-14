@@ -303,6 +303,15 @@ internal sealed class TrayContext : ApplicationContext
         AddFlipMode("Switch to the most recent layout", FlipMode.MostRecent);
         AddFlipMode("Show all layouts to pick from", FlipMode.PickCards);
         settings.DropDownItems.Add(flipMode);
+
+        // Picker behaviour sits next to the picker's own mode, above the browser-matching group.
+        var rightClickItem = new ToolStripMenuItem("Right-click a card updates it — skip the menu")
+        {
+            Checked = _state.Settings.PickerRightClickUpdates
+        };
+        rightClickItem.Click += (_, _) => TogglePickerRightClick();
+        settings.DropDownItems.Add(rightClickItem);
+
         settings.DropDownItems.Add(new ToolStripSeparator());
 
         var matchProfilesItem = new ToolStripMenuItem("Match Chrome/Edge browser profiles")
@@ -411,6 +420,17 @@ internal sealed class TrayContext : ApplicationContext
             _state.Settings.LooseBrowserMatch
                 ? "Placing browser windows by profile, even if the page changed"
                 : "Browser windows only match their exact saved page");
+    }
+
+    private void TogglePickerRightClick()
+    {
+        _state.Settings.PickerRightClickUpdates = !_state.Settings.PickerRightClickUpdates;
+        _state.Save();
+        RebuildMenu();
+        OsdForm.Flash("Right-click a card",
+            _state.Settings.PickerRightClickUpdates
+                ? "Updates that layout to your current windows — no menu"
+                : "Opens the menu: switch, update, rename or delete");
     }
 
     private void ToggleRestoreBrowserTab()
@@ -1179,6 +1199,7 @@ internal sealed class TrayContext : ApplicationContext
 
         bool matchProfiles = _state.Settings.MatchBrowserProfiles;
         bool looseBrowser = _state.Settings.LooseBrowserMatch;
+        bool rightClickUpdates = _state.Settings.PickerRightClickUpdates;
         var layouts = _state.Layouts;
         int currentIndex = _currentIndex;
 
@@ -1210,7 +1231,8 @@ internal sealed class TrayContext : ApplicationContext
                 Rename: name => { int i = LayoutIndex(name); if (i >= 0) Rename(i); },
                 Delete: name => { int i = LayoutIndex(name); if (i >= 0) Delete(i); },
                 SaveNew: LockCurrent,
-                Reorder: Reorder))));
+                Reorder: Reorder),
+                rightClickUpdates)));
         });
     }
 
@@ -1364,7 +1386,9 @@ internal sealed class TrayContext : ApplicationContext
             "In the card picker, drag a card to a new spot to put your layouts in the order you " +
             "want them — the number keys and the tray list follow. Right-click a card to update, " +
             "rename, or delete that layout — or right-click the dark background to save your " +
-            "current windows as a new layout.\n" +
+            "current windows as a new layout. If you mostly just want to re-save a layout, turn on " +
+            "Settings → \"Right-click a card updates it — skip the menu\" and a right-click does " +
+            "that in one go.\n" +
             "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
             "ARRANGE WINDOWS:\n" +
             "\"Arrange windows\" (in the tray menu) tidies what's open right now: pick an app " +

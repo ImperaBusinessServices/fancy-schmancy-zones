@@ -35,6 +35,11 @@ internal sealed class LayoutPickerForm : Form
         Action<IReadOnlyList<string>> Reorder);
 
     private readonly PickerActions _actions;
+
+    /// <summary>Settings → "Right-click a card updates it — skip the menu". When true a right-click
+    /// on a card goes straight to Update and no card menu is built at all.</summary>
+    private readonly bool _rightClickUpdates;
+
     private int _count;
     private readonly Label _title;
     private readonly Label _hint;
@@ -76,8 +81,9 @@ internal sealed class LayoutPickerForm : Form
     /// open right now (closed ones are left out so the card previews what a flip would really do).</summary>
     public sealed record CardInfo(string Name, IReadOnlyList<Rect> OpenWindows);
 
-    /// <summary>Show the picker (or re-focus the one already open).</summary>
-    public static void Show(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions)
+    /// <summary>Show the picker (or re-focus the one already open). <paramref name="rightClickUpdates"/>
+    /// is Settings → "Right-click a card updates it — skip the menu".</summary>
+    public static void Show(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions, bool rightClickUpdates)
     {
         if (cards.Count == 0) return;
         if (_current is { IsDisposed: false })
@@ -85,17 +91,18 @@ internal sealed class LayoutPickerForm : Form
             _current.Activate();
             return;
         }
-        var f = new LayoutPickerForm(cards, currentIndex, actions);
+        var f = new LayoutPickerForm(cards, currentIndex, actions, rightClickUpdates);
         _current = f;
         f.FormClosed += (_, _) => { if (ReferenceEquals(_current, f)) _current = null; };
         f.Show();
         f.Activate();
     }
 
-    private LayoutPickerForm(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions)
+    private LayoutPickerForm(IReadOnlyList<CardInfo> cards, int currentIndex, PickerActions actions, bool rightClickUpdates)
     {
         _actions = actions;
         _count = cards.Count;
+        _rightClickUpdates = rightClickUpdates;
 
         var screen = Screen.FromPoint(Cursor.Position);
         _s = DpiScaleFor(screen);
@@ -124,7 +131,10 @@ internal sealed class LayoutPickerForm : Form
         _hint = new Label
         {
             Text = "Click a card  ·  press 1–9  ·  drag a card to put it in a new spot  ·  Esc to cancel\n" +
-                   "Right-click a card to update, rename or delete it  ·  right-click the background to save a new layout",
+                   (rightClickUpdates
+                       ? "Right-click a card to update it to your current windows"
+                       : "Right-click a card to update, rename or delete it") +
+                   "  ·  right-click the background to save a new layout",
             Font = new Font("Segoe UI", 11.5f),
             ForeColor = Color.FromArgb(165, 165, 175),
             BackColor = Color.Transparent,
@@ -151,7 +161,15 @@ internal sealed class LayoutPickerForm : Form
             card.MouseMove += (_, e) => DragTo(card, e);
             card.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
             card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !GestureWasDrag) PickCard(card); };
-            card.ContextMenuStrip = BuildCardMenu(card);
+            if (_rightClickUpdates)
+            {
+                // Straight to Update, no menu. The card also has to SWALLOW the context-menu message:
+                // with no menu of its own it would bubble up to the form's backdrop menu, and
+                // right-clicking a card would offer "save a new layout" — the wrong thing entirely.
+                card.SwallowContextMenu = true;
+                card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Right && !_dragging) UpdateCard(card); };
+            }
+            else card.ContextMenuStrip = BuildCardMenu(card);
             _flow.Controls.Add(card);
         }
 
@@ -391,7 +409,7 @@ internal sealed class LayoutPickerForm : Form
         m.Items.Add(new ToolStripMenuItem(card.LayoutName) { Enabled = false });   // header: which card
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(Item("Switch to this layout", () => PickCard(card)));
-        m.Items.Add(Item("Update it to my current windows", () => { Close(); _actions.Update(card.LayoutName); }));
+        m.Items.Add(Item("Update it to my current windows", () => UpdateCard(card)));
         m.Items.Add(Item("Rename…", () => { Close(); _actions.Rename(card.LayoutName); }));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(Item("Delete this layout", () => DeleteCard(card)));
@@ -450,6 +468,15 @@ internal sealed class LayoutPickerForm : Form
         TrayContext.LogFlip($"picker: PICK \"{card.LayoutName}\" -> closing");
         Close();
         _actions.Switch(card.LayoutName);
+    }
+
+    /// <summary>Re-save this layout as the windows are arranged right now. Shared by the card menu
+    /// and, when Settings says so, a bare right-click on the card.</summary>
+    private void UpdateCard(Card card)
+    {
+        TrayContext.LogFlip($"picker: right-click update \"{card.LayoutName}\"");
+        Close();
+        _actions.Update(card.LayoutName);
     }
 
     /// <summary>Pick the nth card as currently shown (keyboard 1–9). Goes through the flow panel's
@@ -572,6 +599,20 @@ internal sealed class LayoutPickerForm : Form
 
         /// <summary>The layout this card stands for — the stable identity the picker's actions use.</summary>
         public string LayoutName => _name;
+
+        /// <summary>Eat WM_CONTEXTMENU instead of letting it bubble. Set when a right-click is wired
+        /// to act directly: a control with no ContextMenuStrip passes the message to its parent, and
+        /// the parent here is the form whose menu offers "save a NEW layout" — so without this, the
+        /// right-click that should update THIS layout would offer to create a different one.</summary>
+        public bool SwallowContextMenu { get; set; }
+
+        private const int WM_CONTEXTMENU = 0x007B;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_CONTEXTMENU && SwallowContextMenu) return;
+            base.WndProc(ref m);
+        }
 
         public Card(string name, IReadOnlyList<Rect> openWindows, int number, bool isCurrent, float s)
         {
