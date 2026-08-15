@@ -103,6 +103,7 @@ internal sealed class LayoutPickerForm : Form
         _actions = actions;
         _count = cards.Count;
         _rightClickUpdates = rightClickUpdates;
+        _holdTimer.Tick += (_, _) => OnHoldElapsed();
 
         var screen = Screen.FromPoint(Cursor.Position);
         _s = DpiScaleFor(screen);
@@ -132,7 +133,7 @@ internal sealed class LayoutPickerForm : Form
         {
             Text = "Click a card  ·  press 1–9  ·  drag a card to put it in a new spot  ·  Esc to cancel\n" +
                    (rightClickUpdates
-                       ? "Right-click a card to update it to your current windows"
+                       ? "Right-click a card to update it — hold the right button for the full menu"
                        : "Right-click a card to update, rename or delete it") +
                    "  ·  right-click the background to save a new layout",
             Font = new Font("Segoe UI", 11.5f),
@@ -163,11 +164,14 @@ internal sealed class LayoutPickerForm : Form
             card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && !GestureWasDrag) PickCard(card); };
             if (_rightClickUpdates)
             {
-                // Straight to Update, no menu. The card also has to SWALLOW the context-menu message:
-                // with no menu of its own it would bubble up to the form's backdrop menu, and
-                // right-clicking a card would offer "save a new layout" — the wrong thing entirely.
+                // A quick right-click updates; HOLDING the right button opens the full menu. We drive
+                // that ourselves from down/up, so the card must SWALLOW the context-menu message —
+                // left alone it would bubble to the form's backdrop menu, and a right-click meant to
+                // update THIS layout would offer to save a NEW one instead.
                 card.SwallowContextMenu = true;
-                card.MouseClick += (_, e) => { if (e.Button == MouseButtons.Right && !_dragging) UpdateCard(card); };
+                card.HoldMenu = BuildCardMenu(card);
+                card.MouseDown += (_, e) => { if (e.Button == MouseButtons.Right) BeginRightPress(card); };
+                card.MouseUp += (_, e) => { if (e.Button == MouseButtons.Right) EndRightPress(card); };
             }
             else card.ContextMenuStrip = BuildCardMenu(card);
             _flow.Controls.Add(card);
@@ -202,7 +206,14 @@ internal sealed class LayoutPickerForm : Form
         // If the picker closes while a right-click menu is up (Esc arrives via the global hook),
         // take the menu down with it — an orphaned menu floating over the desktop looks broken.
         // Same for a half-finished drag: the floating card goes with it.
-        FormClosed += (_, _) => { foreach (var m in _menus) m.Close(); _menus.Clear(); KillGhost(); };
+        FormClosed += (_, _) =>
+        {
+            _holdTimer.Stop();
+            _holdTimer.Dispose();
+            foreach (var m in _menus) m.Close();
+            _menus.Clear();
+            KillGhost();
+        };
     }
 
     // ---- Drag a card to reorder ----
@@ -479,6 +490,51 @@ internal sealed class LayoutPickerForm : Form
         _actions.Update(card.LayoutName);
     }
 
+    // ---- Quick right-click updates; HOLD the right button for the full menu ----
+    //
+    // Decided on the RELEASE, not on the timer tick. Popping a menu while the button is still down
+    // means the release that follows lands on a menu that has only just appeared — a good way to
+    // pick an item nobody chose. The timer only ARMS the gesture and repaints the card amber, so
+    // there's a visible "let go now for the menu"; letting go before that just updates.
+
+    private const int RightHoldMs = 500;   // comfortably past an ordinary click, still snappy
+
+    private readonly System.Windows.Forms.Timer _holdTimer =    // qualified: Timer is ambiguous here
+        new() { Interval = RightHoldMs };
+    private Card? _rightCard;
+    private bool _rightArmed;
+
+    private void BeginRightPress(Card card)
+    {
+        _rightCard = card;
+        _rightArmed = false;
+        _holdTimer.Stop();
+        _holdTimer.Start();
+    }
+
+    private void OnHoldElapsed()
+    {
+        _holdTimer.Stop();
+        if (_rightCard is not { IsDisposed: false }) return;
+        _rightArmed = true;
+        _rightCard.SetHoldArmed(true);      // amber border: release now and you get the menu
+    }
+
+    private void EndRightPress(Card card)
+    {
+        _holdTimer.Stop();
+        var target = _rightCard;
+        _rightCard = null;
+        bool armed = _rightArmed;
+        _rightArmed = false;
+        if (target is null || target.IsDisposed || !ReferenceEquals(target, card)) return;
+        target.SetHoldArmed(false);
+
+        if (!armed) { UpdateCard(target); return; }
+        TrayContext.LogFlip($"picker: right-hold menu \"{target.LayoutName}\"");
+        target.HoldMenu?.Show(target, target.PointToClient(Cursor.Position));
+    }
+
     /// <summary>Pick the nth card as currently shown (keyboard 1–9). Goes through the flow panel's
     /// live order, not the list the picker opened with — deletes may have shifted the cards.</summary>
     private void Pick(int n)
@@ -596,6 +652,7 @@ internal sealed class LayoutPickerForm : Form
         private readonly bool _isCurrent;
         private bool _hover;
         private bool _placeholder;         // true while this card is the one being dragged
+        private bool _holdArmed;           // right button held past the threshold — release = menu
 
         /// <summary>The layout this card stands for — the stable identity the picker's actions use.</summary>
         public string LayoutName => _name;
@@ -605,6 +662,19 @@ internal sealed class LayoutPickerForm : Form
         /// the parent here is the form whose menu offers "save a NEW layout" — so without this, the
         /// right-click that should update THIS layout would offer to create a different one.</summary>
         public bool SwallowContextMenu { get; set; }
+
+        /// <summary>The full Switch/Update/Rename/Delete menu, shown only after the right button has
+        /// been HELD. Not assigned as ContextMenuStrip — the picker shows it by hand, so that a quick
+        /// right-click can mean "just update" instead.</summary>
+        public ContextMenuStrip? HoldMenu { get; set; }
+
+        /// <summary>Held long enough: paint amber so it's obvious that letting go now opens the menu.</summary>
+        public void SetHoldArmed(bool on)
+        {
+            if (_holdArmed == on) return;
+            _holdArmed = on;
+            Invalidate();
+        }
 
         private const int WM_CONTEXTMENU = 0x007B;
 
@@ -664,10 +734,12 @@ internal sealed class LayoutPickerForm : Form
                 return;
             }
 
-            Color borderColor = _hover ? Color.FromArgb(120, 175, 255)
+            // Armed wins over everything: it's transient and it's the one that's about to act.
+            Color borderColor = _holdArmed ? Color.FromArgb(255, 190, 90)
+                              : _hover ? Color.FromArgb(120, 175, 255)
                               : _isCurrent ? Color.FromArgb(95, 135, 205)
                               : Color.FromArgb(70, 70, 82);
-            using (var pen = new Pen(borderColor, _hover || _isCurrent ? 2f : 1f))
+            using (var pen = new Pen(borderColor, _holdArmed ? 3f : _hover || _isCurrent ? 2f : 1f))
                 g.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
 
             // Everything below is drawn against the original 300x210 design and multiplied by k to

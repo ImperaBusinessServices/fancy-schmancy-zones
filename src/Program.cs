@@ -305,7 +305,7 @@ internal sealed class TrayContext : ApplicationContext
         settings.DropDownItems.Add(flipMode);
 
         // Picker behaviour sits next to the picker's own mode, above the browser-matching group.
-        var rightClickItem = new ToolStripMenuItem("Right-click a card updates it — skip the menu")
+        var rightClickItem = new ToolStripMenuItem("Right-click a card updates it (hold for the menu)")
         {
             Checked = _state.Settings.PickerRightClickUpdates
         };
@@ -429,7 +429,7 @@ internal sealed class TrayContext : ApplicationContext
         RebuildMenu();
         OsdForm.Flash("Right-click a card",
             _state.Settings.PickerRightClickUpdates
-                ? "Updates that layout to your current windows — no menu"
+                ? "Updates that layout to your current windows — hold the button for the menu"
                 : "Opens the menu: switch, update, rename or delete");
     }
 
@@ -1387,8 +1387,9 @@ internal sealed class TrayContext : ApplicationContext
             "want them — the number keys and the tray list follow. Right-click a card to update, " +
             "rename, or delete that layout — or right-click the dark background to save your " +
             "current windows as a new layout. If you mostly just want to re-save a layout, turn on " +
-            "Settings → \"Right-click a card updates it — skip the menu\" and a right-click does " +
-            "that in one go.\n" +
+            "Settings → \"Right-click a card updates it (hold for the menu)\": a quick right-click " +
+            "then re-saves that layout in one go, and holding the right button for half a second " +
+            "(the card turns amber) still opens the full menu when you let go.\n" +
             "Click the tray icon (left or right) to pick, rename, update, or delete layouts.\n\n" +
             "ARRANGE WINDOWS:\n" +
             "\"Arrange windows\" (in the tray menu) tidies what's open right now: pick an app " +
