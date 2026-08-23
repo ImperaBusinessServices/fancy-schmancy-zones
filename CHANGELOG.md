@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 — 2026-07-16 (not yet released)
+## 0.12.0 — 2026-08-22
 
 - **The card picker is interactive now.** Right-click any layout card to **update it to your
   current windows**, **rename** it, or **delete** it — the card disappears on the spot and the
@@ -8,6 +8,17 @@
   to **save your current windows as a brand-new layout** without touching the tray menu.
 - The right-click menus match the picker's dark look, and closing one no longer risks the whole
   overlay vanishing with it.
+- **Drag a card to reorder your layouts.** Drag a card to a new spot in the picker and that
+  becomes the real order — 1-9 keys, the tray list, and next/previous all follow. Saved the
+  moment you drop it.
+- **New setting: "Right-click a card updates it — skip the menu."** Turn it on and a single
+  right-click goes straight to "update it to my current windows" instead of opening the menu.
+  Default is off, so nothing changes unless you turn it on.
+- **With that setting on, hold the right button ~500ms to get the menu back.** The card glows
+  amber while armed; release and the full menu (Switch / Update / Rename / Delete) opens. A quick
+  right-click still just updates.
+- Per-profile Chrome/Edge arranging: tray → Arrange windows → pick a browser → pick a login →
+  Grid / Side by side / Stacked / Cascade, scoped to just that profile's windows.
 - **Layouts now bring back the browser tab you saved, not just the window.** A layout has always
   remembered each browser window's page (its title); switching to a layout now also switches each
   browser window back to that tab when it can still be found by its saved title — so you land on
