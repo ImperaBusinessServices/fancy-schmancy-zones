@@ -43,9 +43,12 @@ internal sealed class TrayContext : ApplicationContext
 {
     private readonly NotifyIcon _tray;
     private readonly KeyboardHook _hook;
-    private readonly Control _sync = new();   // marshals hook-thread work back onto the UI message loop
+    // Permanent hidden top-level window: marshals work to the UI thread and owns dialogs.
+    private readonly Form _sync = new() { ShowInTaskbar = false };
     private readonly AppState _state;
     private readonly ArrangeShortcuts _arrangeShortcuts;
+    private ArrangeSettingsForm? _arrangeSettingsDialog;
+    private bool _arrangeSettingsPending;
     private ContextMenuStrip _menu = new();
     private int _currentIndex = -1;
 
@@ -822,16 +825,41 @@ internal sealed class TrayContext : ApplicationContext
 
     private void ShowArrangeSettings()
     {
+        if (_arrangeSettingsDialog is { IsDisposed: false } existing)
+        {
+            existing.ShowInFront();
+            return;
+        }
+        if (_arrangeSettingsPending) return;
+        _arrangeSettingsPending = true;
+        // Finish the tray menu's click/close sequence before starting a modal loop.
+        // Otherwise the popup's activation/owner cleanup can bury the new window.
+        _menu.Close(ToolStripDropDownCloseReason.ItemClicked);
+        Run(() =>
+        {
+            _arrangeSettingsPending = false;
+            OpenArrangeSettings();
+        });
+    }
+
+    private void OpenArrangeSettings()
+    {
         using var dialog = new ArrangeSettingsForm(_state.Settings);
-        if (dialog.ShowDialog() != DialogResult.OK) return;
-        dialog.Apply(_state.Settings);
-        _state.Save();
-        var unavailable = _arrangeShortcuts.Apply(_state.Settings.ArrangeShortcuts);
-        RebuildMenu();
-        if (unavailable.Count > 0)
-            MessageBox.Show("Settings saved. These shortcuts are already used by another app and could not be enabled:\n\n" +
-                string.Join("\n", unavailable) + "\n\nClose the other app or disable its shortcut, then save these settings again.",
-                "Arrange windows", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        _arrangeSettingsDialog = dialog;
+        try
+        {
+            // Use our permanent hidden window as owner, never the disappearing popup.
+            if (dialog.ShowDialog(_sync) != DialogResult.OK) return;
+            dialog.Apply(_state.Settings);
+            _state.Save();
+            var unavailable = _arrangeShortcuts.Apply(_state.Settings.ArrangeShortcuts);
+            RebuildMenu();
+            if (unavailable.Count > 0)
+                MessageBox.Show("Settings saved. These shortcuts are already used by another app and could not be enabled:\n\n" +
+                    string.Join("\n", unavailable) + "\n\nClose the other app or disable its shortcut, then save these settings again.",
+                    "Arrange windows", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        finally { _arrangeSettingsDialog = null; }
     }
 
     private void OnArrangeShortcut(string key)

@@ -113,6 +113,21 @@ internal sealed class ArrangeSettingsForm : Form
         _target.DropDownWidth = width;
         PerformLayout();
     }
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        ShowInFront();
+    }
+    internal void ShowInFront()
+    {
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        // A tray app may be denied foreground activation. Briefly raising the dialog
+        // makes it visible even in that case; it remains a normal window afterwards.
+        TopMost = true;
+        BringToFront();
+        Activate();
+        TopMost = false;
+    }
     internal void Apply(AppSettings settings)
     {
         settings.ArrangeGroupByApp = _group.Checked;

@@ -2,6 +2,8 @@
 
 ## 0.12.1 — 2026-10-08 (local build)
 
+- Settings open after the tray menu finishes closing, with a permanent window owner and explicit foreground placement. Repeat clicks bring the existing settings window forward.
+
 - Reworked the settings dialog into two sections that size to their contents; Save and Cancel remain visible without scrolling, including at increased display scaling. Monitor choices size to their full labels.
 
 - Added Cascade's missing arrangement settings: keep same-app windows together, fill grids down first, and arrange an app or browser profile across all monitors, on its current monitor, or on one selected monitor.

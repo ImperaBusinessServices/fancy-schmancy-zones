@@ -73,8 +73,65 @@ internal static class Check
             CheckBounds(form);
         }
         form.Hide();
+        form.Dispose();
+        CheckMenuOpening();
         Console.WriteLine("PASS: grid, preferences, themes, layout bounds, visible Save/Cancel, and increased display scaling. No live windows arranged.");
     }
+    static void CheckMenuOpening()
+    {
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var trayType = typeof(Arrange).Assembly.GetType("FancySchmancyZones.TrayContext")!;
+        var open = trayType.GetMethod("ShowArrangeSettings", flags)!;
+        foreach (string entry in new[] { "Settings", "Arrange windows" })
+        {
+            // Run the real tray handler with isolated state. No tray icon or global hook,
+            // no saved layouts loaded, and Cancel prevents any writes to settings.
+            object tray = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(trayType);
+            using var sync = new Form { ShowInTaskbar = false };
+            _ = sync.Handle;
+            using var menu = new ContextMenuStrip();
+            trayType.GetField("_sync", flags)!.SetValue(tray, sync);
+            trayType.GetField("_menu", flags)!.SetValue(tray, menu);
+            trayType.GetField("_state", flags)!.SetValue(tray, new AppState());
+            var root = new ToolStripMenuItem(entry);
+            var item = new ToolStripMenuItem("Arrangement settings");
+            root.DropDownItems.Add(item); menu.Items.Add(root);
+            item.Click += (_, _) => open.Invoke(tray, null);
+            Exception? failure = null;
+            bool observed = false;
+            using var inspect = new System.Windows.Forms.Timer { Interval = 60 };
+            inspect.Tick += (_, _) =>
+            {
+                inspect.Stop();
+                Form? dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(f => f.GetType().Name == "ArrangeSettingsForm");
+                try
+                {
+                    Require(dialog is { Visible: true }, "first click shows settings");
+                    Require(!menu.Visible, "menu closed before settings show");
+                    Require(GetWindow(dialog!.Handle, 4) == sync.Handle, "permanent owner, not popup");
+                    Require(!dialog.TopMost, "dialog does not stay always-on-top");
+                    item.PerformClick();
+                    Require(Application.OpenForms.Cast<Form>().Count(f => f.GetType().Name == "ArrangeSettingsForm") == 1, "repeat click reuses dialog");
+                    observed = true;
+                }
+                catch (Exception ex) { failure = ex; }
+                finally { if (dialog != null) { dialog.DialogResult = DialogResult.Cancel; dialog.Close(); } }
+            };
+            menu.Show(new Point(-20000, -20000));
+            Application.DoEvents();
+            item.PerformClick();
+            item.PerformClick(); // second queued click must not produce a second modal window
+            Require(!Application.OpenForms.Cast<Form>().Any(f => f.GetType().Name == "ArrangeSettingsForm"), "opening deferred until click returns");
+            inspect.Start();
+            Application.DoEvents();
+            if (failure != null) throw failure;
+            Require(observed, "opening inspected");
+            Require(trayType.GetField("_arrangeSettingsDialog", flags)!.GetValue(tray) == null, "closed window cleared");
+            Console.WriteLine($"PASS: {entry} first click, menu closed, stable owner, duplicate click, refocus, Cancel cleanup.");
+        }
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern IntPtr GetWindow(IntPtr hwnd, uint command);
     static void CheckBounds(Control parent)
     {
         foreach (Control child in parent.Controls)
