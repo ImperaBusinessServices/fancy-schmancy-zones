@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.1 — 2026-10-08 (local build)
+
+- Added Cascade's missing arrangement settings: keep same-app windows together, fill grids down first, and arrange an app or browser profile across all monitors, on its current monitor, or on one selected monitor.
+- New settings window under Settings → Arrange windows, also accessible from the Arrange windows menu; follows Windows light/dark preference and includes a theme toggle.
+- Individually enable Cascade's six Ctrl+Alt shortcuts for menu, cascade, grid, side-by-side, undo, and cascade all. Conflicting shortcuts are reported. Browser shortcuts arrange the active profile.
+- Existing arrangement defaults are preserved; shortcuts start disabled.
+
 ## 0.12.0 — 2026-08-22
 
 - **The card picker is interactive now.** Right-click any layout card to **update it to your

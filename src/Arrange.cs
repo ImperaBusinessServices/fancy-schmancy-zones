@@ -22,7 +22,7 @@ public static class Arrange
 
     // ---- Geometry (pure math; work area in, window rectangles out) ----
 
-    public static List<Rect> Compute(Shape shape, Rectangle work, int n)
+    public static List<Rect> Compute(Shape shape, Rectangle work, int n, bool downFirst = false)
     {
         var rects = new List<Rect>(Math.Max(n, 0));
         if (n <= 0) return rects;
@@ -33,7 +33,8 @@ public static class Arrange
                 // cells tile the work area exactly, with no rounding drift on the last row/column.
                 int cols = (int)Math.Ceiling(Math.Sqrt(n));
                 int rows = (int)Math.Ceiling(n / (double)cols);
-                for (int i = 0; i < n; i++) rects.Add(Cell(work, cols, rows, i % cols, i / cols));
+                for (int i = 0; i < n; i++) rects.Add(Cell(work, cols, rows,
+                    downFirst ? i / rows : i % cols, downFirst ? i % rows : i / cols));
                 break;
 
             case Shape.SideBySide:
@@ -79,7 +80,8 @@ public static class Arrange
     /// already on and lays out each monitor's share there (All windows). Runs on a background
     /// thread. Returns how many windows were placed.
     /// </summary>
-    public static int Do(Shape shape, List<LiveWindow> group, bool spreadAcrossMonitors)
+    public static int Do(Shape shape, List<LiveWindow> group, bool spreadAcrossMonitors,
+        string target = "all", bool groupByApp = false, bool downFirst = false)
     {
         if (group.Count == 0) return 0;
 
@@ -108,6 +110,18 @@ public static class Arrange
 
         var monitors = Screen.AllScreens.OrderBy(s => s.Bounds.X).ToList();
         var chunks = new List<(Screen Mon, List<LiveWindow> Wins)>();
+        var stacking = group.ToList();
+        if (groupByApp)
+            group = group.OrderBy(w => w.Process, StringComparer.OrdinalIgnoreCase).ToList();
+
+        if (spreadAcrossMonitors && target.StartsWith("monitor:", StringComparison.Ordinal) &&
+            int.TryParse(target.AsSpan(8), out int index))
+        {
+            chunks.Add((monitors[index >= 0 && index < monitors.Count ? index : 0], group));
+        }
+        else
+        {
+        if (target == "current") spreadAcrossMonitors = false;
 
         if (spreadAcrossMonitors && monitors.Count > 1)
         {
@@ -129,11 +143,12 @@ public static class Arrange
         {
             chunks.Add((monitors[0], group));
         }
+        }
 
         int moved = 0;
         foreach (var (mon, wins) in chunks)
         {
-            var rects = Compute(shape, mon.WorkingArea, wins.Count);
+            var rects = Compute(shape, mon.WorkingArea, wins.Count, downFirst);
             for (int i = 0; i < wins.Count; i++)
             {
                 if (MoveFlush(wins[i].Hwnd, rects[i]))   // honest count: only what actually moved
@@ -150,15 +165,15 @@ public static class Arrange
         System.Threading.Thread.Sleep(350);
         foreach (var (mon, wins) in chunks)
         {
-            var rects = Compute(shape, mon.WorkingArea, wins.Count);
+            var rects = Compute(shape, mon.WorkingArea, wins.Count, downFirst);
             for (int i = 0; i < wins.Count; i++)
                 MoveFlush(wins[i].Hwnd, rects[i]);
         }
 
         // Raise back-to-front so the window that was frontmost when the menu was opened ends up
         // on top — same deterministic-stacking rule the flip uses (v0.10.4).
-        for (int i = group.Count - 1; i >= 0; i--) WindowManager.RaiseToTop(group[i].Hwnd);
-        WindowManager.Focus(group[0].Hwnd);
+        for (int i = stacking.Count - 1; i >= 0; i--) WindowManager.RaiseToTop(stacking[i].Hwnd);
+        WindowManager.Focus(stacking[0].Hwnd);
         return moved;
     }
 

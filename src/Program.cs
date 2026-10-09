@@ -45,6 +45,7 @@ internal sealed class TrayContext : ApplicationContext
     private readonly KeyboardHook _hook;
     private readonly Control _sync = new();   // marshals hook-thread work back onto the UI message loop
     private readonly AppState _state;
+    private readonly ArrangeShortcuts _arrangeShortcuts;
     private ContextMenuStrip _menu = new();
     private int _currentIndex = -1;
 
@@ -68,6 +69,9 @@ internal sealed class TrayContext : ApplicationContext
         RebuildMenu();
 
         _ = _sync.Handle; // force the handle to exist so BeginInvoke actually works
+        _arrangeShortcuts = new ArrangeShortcuts(OnArrangeShortcut);
+        var unavailable = _arrangeShortcuts.Apply(_state.Settings.ArrangeShortcuts);
+        if (unavailable.Count > 0) Notify("Arrangement shortcuts unavailable", string.Join("\n", unavailable));
 
         _settle.Tick += (_, _) => OnSettle();   // fires once cycling pauses; see Cycle()
 
@@ -281,6 +285,8 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem($"   or  next {_nextKeyLabel}  ·  prev {_prevKeyLabel}") { Enabled = false });
 
         var settings = new ToolStripMenuItem("Settings");
+        settings.DropDownItems.Add("Arrange windows…", null, (_, _) => ShowArrangeSettings());
+        settings.DropDownItems.Add(new ToolStripSeparator());
 
         // Checked from the registry, not from our settings file — see Startup.cs.
         var startWithWindowsItem = new ToolStripMenuItem("Start with Windows")
@@ -811,7 +817,38 @@ internal sealed class TrayContext : ApplicationContext
         var undo = new ToolStripMenuItem("Undo last arrange") { Enabled = Arrange.HasUndo };
         undo.Click += (_, _) => StartUndoArrange();
         root.DropDownItems.Add(undo);
+        root.DropDownItems.Add("Arrangement settings…", null, (_, _) => ShowArrangeSettings());
     }
+
+    private void ShowArrangeSettings()
+    {
+        using var dialog = new ArrangeSettingsForm(_state.Settings);
+        if (dialog.ShowDialog() != DialogResult.OK) return;
+        dialog.Apply(_state.Settings);
+        _state.Save();
+        var unavailable = _arrangeShortcuts.Apply(_state.Settings.ArrangeShortcuts);
+        RebuildMenu();
+        if (unavailable.Count > 0)
+            MessageBox.Show("Settings saved. These shortcuts are already used by another app and could not be enabled:\n\n" +
+                string.Join("\n", unavailable) + "\n\nClose the other app or disable its shortcut, then save these settings again.",
+                "Arrange windows", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void OnArrangeShortcut(string key)
+    {
+        if (key == "menu") { _menu.Show(Cursor.Position); return; }
+        if (key == "undo") { StartUndoArrange(); return; }
+        if (key == "all") { StartArrange(null, Arrange.Shape.Cascade); return; }
+        var foreground = GetForegroundWindow();
+        var window = WindowManager.GetAltTabWindows().FirstOrDefault(w => w.Hwnd == foreground);
+        if (window == null) { OsdForm.Flash("Arrange windows", "Select an app window first"); return; }
+        var shape = key == "grid" ? Arrange.Shape.Grid : key == "side" ? Arrange.Shape.SideBySide : Arrange.Shape.Cascade;
+        string? profile = WindowManager.IsChromium(window.Process)
+            ? BrowserProfiles.ProfileOf(window.Hwnd, window.Process).Key : null;
+        StartArrange(window.Process, shape, string.IsNullOrEmpty(profile) ? null : profile);
+    }
+
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
 
     /// <summary>One browser profile with windows open right now.</summary>
     private sealed record ProfileGroup(string Key, string Label, List<LiveWindow> Windows);
@@ -880,6 +917,9 @@ internal sealed class TrayContext : ApplicationContext
         _settle.Stop();      // a queued flip firing after us would stomp the fresh arrangement
         _activating = true;
 
+        string target = _state.Settings.ArrangeTarget;
+        bool groupByApp = _state.Settings.ArrangeGroupByApp;
+        bool downFirst = _state.Settings.ArrangeGridDownFirst;
         System.Threading.Tasks.Task.Run(() =>
         {
             int found = 0, moved = 0;
@@ -932,7 +972,8 @@ internal sealed class TrayContext : ApplicationContext
                             (profileKey != null ? $" profile \"{label}\" [{profileKey}]" : "") +
                             $" — {found} window(s)" +
                             (process != null ? $", minimizing {all.Count - found} other(s)" : ""));
-                    moved = Arrange.Do(shape, group, spreadAcrossMonitors: process != null);
+                    moved = Arrange.Do(shape, group, spreadAcrossMonitors: process != null,
+                        target: target, groupByApp: groupByApp, downFirst: downFirst);
                     if (moved != found) LogFlip($"  arrange placed {moved} of {found} (rest: closed since, or admin windows we can't touch)");
                 }
             }
@@ -1446,6 +1487,7 @@ internal sealed class TrayContext : ApplicationContext
 
     private void Quit()
     {
+        _arrangeShortcuts.Dispose();
         _settle.Stop();
         _hook.Dispose();
         _sync.Dispose();

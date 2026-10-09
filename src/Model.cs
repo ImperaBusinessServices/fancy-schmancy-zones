@@ -47,6 +47,11 @@ public enum FlipMode
 /// <summary>User-adjustable app behavior, persisted alongside layouts.</summary>
 public sealed class AppSettings
 {
+    public bool ArrangeGroupByApp { get; set; } = false;
+    public bool ArrangeGridDownFirst { get; set; } = false;
+    public string ArrangeTarget { get; set; } = "all";
+    public List<string> ArrangeShortcuts { get; set; } = new();
+
     // When on, layouts remember which Chrome/Edge profile each browser window used, and
     // reopen/match that same profile. Turn off to treat all browser windows generically
     // (the pre-0.5.0 behavior) — e.g. if profile detection ever picks the wrong window.
