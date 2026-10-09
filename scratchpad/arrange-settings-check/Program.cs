@@ -9,6 +9,8 @@ internal static class Check
     [STAThread]
     static void Main()
     {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
         var work = new Rectangle(-1600, 0, 1600, 900);
         foreach (bool down in new[] { false, true })
         for (int n = 1; n <= 40; n++)
@@ -43,7 +45,44 @@ internal static class Check
             Require(dark ? form.BackColor.GetBrightness() < .2 && form.ForeColor.GetBrightness() > .8
                 : form.BackColor.GetBrightness() > .9 && form.ForeColor.GetBrightness() < .2, "theme contrast");
         }
-        Console.WriteLine("PASS: 80 grid scenarios, fill direction, existing defaults, dialog save, persistence, both themes. No live windows arranged.");
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-20000, -20000);
+        form.Show();
+        Application.DoEvents();
+        var targetBox = (ComboBox)type.GetField("_target", flags)!.GetValue(form)!;
+        Require(targetBox.Items.Cast<object>().All(item => TextRenderer.MeasureText(item.ToString(), targetBox.Font).Width
+            + SystemInformation.VerticalScrollBarWidth < targetBox.Width), "all monitor option labels fit");
+        foreach (bool dark in new[] { true, false })
+        {
+            darkField.SetValue(form, dark);
+            type.GetMethod("PaintTheme", flags)!.Invoke(form, new object[] { form });
+            form.PerformLayout();
+            CheckBounds(form);
+            Require(form.AcceptButton is Button save && save.Visible &&
+                form.RectangleToClient(save.RectangleToScreen(save.ClientRectangle)).Bottom <= form.ClientSize.Height, "Save visible without scrolling");
+            Require(form.CancelButton is Button cancel && cancel.Visible, "Cancel visible");
+            using var bitmap = new Bitmap(form.Width, form.Height);
+            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            bitmap.Save(Path.Combine(AppContext.BaseDirectory, dark ? "preview-dark.png" : "preview-light.png"));
+            Console.WriteLine($"Preview {(dark ? "dark" : "light")}: {form.Width} × {form.Height} at {form.DeviceDpi} DPI");
+        }
+        foreach (float scale in new[] { 1.25f, 1.2f })
+        {
+            form.Scale(new SizeF(scale, scale));
+            form.PerformLayout();
+            CheckBounds(form);
+        }
+        form.Hide();
+        Console.WriteLine("PASS: grid, preferences, themes, layout bounds, visible Save/Cancel, and increased display scaling. No live windows arranged.");
+    }
+    static void CheckBounds(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            Require(parent.ClientRectangle.Contains(child.Bounds), $"clipped {child.GetType().Name}: {child.Text} {child.Bounds} inside {parent.ClientRectangle}");
+            Require(child is not FlowLayoutPanel flow || !flow.AutoScroll, "no scrolling required");
+            CheckBounds(child);
+        }
     }
     static void Require(bool passed, string name) { if (!passed) throw new Exception(name); }
 }
